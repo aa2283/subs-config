@@ -2,8 +2,8 @@ name: Subscription Checker
 
 on:
   schedule:
-    - cron: '15 4 * * *'
-  workflow_dispatch:
+    - cron: '15 4 * * *'  # 北京时间 12:15
+  workflow_dispatch:      # 允许手动触发
 
 jobs:
   check-subscriptions:
@@ -14,53 +14,52 @@ jobs:
 
       - name: Run subscription checker
         run: |
-          mkdir -p ${{ github.workspace }}/output
-          chmod -R 777 ${{ github.workspace }}/output
+          # 1. 在后台启动一个“守护监听器”
+          # 它会每隔 5 秒巡检一次日志，发现保存成功就执行 docker stop
+          (
+            echo ">>> 监听器已启动..."
+            while true; do
+              sleep 5
+              # 检查容器日志是否包含成功关键字
+              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
+                echo -e "\n[监听器] 检测到文件保存成功，正在强制停止程序以进入上传步骤..."
+                docker stop checker
+                break
+              fi
+              # 如果容器因为其他原因已经不在运行了，监听器也自动退出
+              if ! docker ps | grep -q "checker"; then 
+                break 
+              fi
+            done
+          ) &
 
-          echo ">>> 启动检测引擎 (实时显示进度)..."
-          
-          # 使用 timeout 命令确保即使程序不退出，也会在指定时间后强制关闭
-          # 同时使用 -t 分配终端以显示进度条
-          # 我们不再使用后台监听，而是让容器在前台跑，直到检测到“保存完成”信号
-          
-          docker run --name checker --rm -t \
+          # 2. 在前台正式运行容器
+          # 不加 -d 也不接管道，这样 GitHub Actions 会 100% 实时显示进度条
+          echo ">>> 开始检测节点..."
+          docker run --name checker --rm \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            -e SUB_URLS="${{ secrets.SUB_URLS }}" \
-            ghcr.io/aa2283/subs-check:master | tee checker.log &
-          
-          # 在前台实时监控日志文件，一旦发现关键词就杀掉
-          # 这种方法比后台进程更稳定
-          while true; do
-            if grep -q "保存本地成功" checker.log 2>/dev/null; then
-              echo -e "\n>>> [系统] 检测到文件存盘，正在收割进程..."
-              docker kill checker || true
-              break
-            fi
-            if ! docker ps | grep -q "checker"; then
-              break
-            fi
-            sleep 1
-          done
+            ghcr.io/aa2283/subs-check:master || echo "容器已停止"
+
+          echo ">>> 检测步骤安全结束。"
 
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }} # 请确保已在 Secrets 中设置此 Token
           path: target-repo
 
       - name: Copy and commit changes
         run: |
-          mkdir -p target-repo/
-          
-          # 直接搬运所有文件，保留 config.yaml 定义的名字
-          cp -rv output/* target-repo/ || echo ">>> 未发现生成文件"
+          # 确保输出目录存在并将结果复制到目标仓库
+          mkdir -p output
+          cp -r output/* target-repo/ || echo "没有检测到新文件"
           
           cd target-repo
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          
           git add .
-          git commit -m "自动更新订阅：同步结果" || echo "无变更"
+          # 提交更改，如果没有变化则跳过，防止报错
+          git commit -m "更新订阅检查结果" || echo "内容无变更，跳过提交"
           git push
