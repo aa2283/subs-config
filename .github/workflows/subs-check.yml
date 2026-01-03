@@ -1,0 +1,52 @@
+name: Subscription Checker
+
+on:
+  schedule:
+    - cron: '15 4 * * *'  # 北京时间 12:15
+  workflow_dispatch:      # 允许手动触发
+
+jobs:
+  check-subscriptions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run subscription checker
+        run: |
+          # 1. 后台启动容器
+          docker run -d --name checker --rm \
+            -v ${{ github.workspace }}/config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master
+
+          # 2. 监控日志并捕获关键字
+          echo "开始监控程序日志..."
+          docker logs -f checker | while read -r line
+          do
+            echo "$line"
+            # 匹配关键字
+            if [[ "$line" == *"保存本地成功"* ]]; then
+              echo ">>> 检测到保存成功，执行 kill 脚本关闭容器..."
+              docker stop checker
+              break
+            fi
+          done
+          echo "程序已退出，准备同步数据。"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: aa2283/v2ray_configs
+          token: ${{ secrets.PAT_TOKEN }}
+          path: target-repo
+
+      - name: Copy and commit changes
+        run: |
+          cp -r output/* target-repo/
+          cd target-repo
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .
+          git commit -m "更新订阅检查结果" || echo "没有变更需要提交"
+          git push
