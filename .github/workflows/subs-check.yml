@@ -1,68 +1,23 @@
-name: Subscription Checker
-
-on:
-  schedule:
-    - cron: '15 4 * * *'
-  workflow_dispatch:
-
-jobs:
-  check-subscriptions:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Run subscription checker
+- name: Run subscription checker
         run: |
           mkdir -p ${{ github.workspace }}/output
           (
-            echo ">>> 极速监听器已启动..."
+            echo ">>> 极速监听器启动..."
             while true; do
               sleep 1
-              # 修改监听逻辑：只要 all.yaml 一出来，立刻执行秒杀，不再等后面的 base64 和 mihomo
+              # 精简版下，我们只盯着 all.yaml 的生成
               if docker logs checker 2>&1 | grep -q "保存本地成功 filepath=/app/output/all.yaml"; then
-                echo -e "\n[监听器] 检测到目标文件已生成，正在强制停止容器以节省时间..."
+                echo -e "\n[监听器] sub.yaml 已就绪，准备收工..."
                 docker stop checker
                 break
               fi
-              # 防止容器意外死亡导致死循环
               if ! docker ps | grep -q "checker"; then break; fi
             done
           ) &
 
-          echo ">>> 开始检测节点..."
+          echo ">>> 启动轻量化检测引擎..."
           docker run --name checker --rm \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -e SUB_URLS="${{ secrets.SUB_URLS }}" \
-            ghcr.io/aa2283/subs-check:master || echo "容器已安全停止"
-
-      - name: Checkout target repository
-        uses: actions/checkout@v4
-        with:
-          repository: aa2283/v2ray_configs
-          token: ${{ secrets.PAT_TOKEN }}
-          path: target-repo
-
-      - name: Copy and commit changes
-        run: |
-          mkdir -p target-repo/
-          
-          # 只搬运这一个文件，并命名为 sub.yaml
-          if [ -f "output/all.yaml" ]; then
-            cp output/all.yaml target-repo/sub.yaml
-          else
-            echo "错误：未找到生成的源文件"
-            exit 1
-          fi
-          
-          cd target-repo
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # 清理掉仓库里可能存在的旧文件（可选）
-          # rm -f all.yaml mihomo.yaml base64.txt
-          
-          git add sub.yaml
-          git commit -m "自动更新单一订阅源：sub.yaml" || echo "无变更"
-          git push
+            ghcr.io/aa2283/subs-check:master
