@@ -15,34 +15,31 @@ jobs:
       - name: Run subscription checker
         run: |
           mkdir -p ${{ github.workspace }}/output
-          
-          # 1. 启动“观察者”后台进程
-          # 它不干扰前台显示，只是静静地盯着容器日志
-          (
-            echo ">>> [观察者] 已就位，等待存盘信号..."
-            # 循环检查日志
-            while true; do
-              # 只要捕获到关键字，立刻停止名为 checker 的容器
-              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
-                echo -e "\n>>> [观察者] 捕获成功，正在秒杀容器..."
-                docker stop checker
-                break
-              fi
-              # 如果容器已经不在运行了（正常结束或报错），观察者也退出
-              if ! docker ps | grep -q "checker"; then break; fi
-              sleep 2
-            done
-          ) &
+          chmod -R 777 ${{ github.workspace }}/output
 
-          # 2. 前台运行容器
-          # -t: 分配虚拟终端，这是显示进度条的关键
-          # --name checker: 必须给容器起名，方便观察者精准打击
-          echo ">>> 正在启动检测引擎 (TTY 模式)..."
-          docker run --name checker --rm -t \
+          # 1. 以后台模式启动，但分配 TTY (-t) 以确保进度条生成
+          # 名字固定为 checker，方便后续操作
+          docker run -d --name checker \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -e SUB_URLS="${{ secrets.SUB_URLS }}" \
-            ghcr.io/aa2283/subs-check:master || echo ">>> 容器已停止运行。"
+            -t ghcr.io/aa2283/subs-check:master
+
+          echo ">>> 正在同步实时进度与日志..."
+
+          # 2. 前台实时跟随日志并检测关键词
+          # stdbuf -oL 确保输出不被缓存，grep --line-buffered 确保实时性
+          docker logs -f checker 2>&1 | while read -r line; do
+            echo "$line"
+            # 只要日志出现“保存本地成功”，立即执行 kill
+            if [[ "$line" == *"保存本地成功"* ]]; then
+              echo -e "\n>>> [系统] 捕获到完成信号，正在强行终止残留进程..."
+              docker kill checker || docker stop checker
+              break # 跳出 while 循环，解锁下一步
+            fi
+          done
+          
+          echo ">>> 节点检测环节已彻底结束。"
 
       - name: Checkout target repository
         uses: actions/checkout@v4
@@ -55,7 +52,7 @@ jobs:
         run: |
           mkdir -p target-repo/
           
-          # 直接同步所有生成的文件，不改名
+          # 3. 搬运所有文件（不改名，保留 config.yaml 定义的名字）
           cp -rv output/* target-repo/ || echo ">>> 未发现生成文件"
           
           cd target-repo
@@ -63,5 +60,5 @@ jobs:
           git config --local user.name "github-actions[bot]"
           
           git add .
-          git commit -m "自动更新订阅" || echo "无变更"
-          git push
+          # 仅在有变动时推送，避免无谓的 Action 报错
+          git diff --quiet && git diff --staged --quiet || (git commit -m "自动更新订阅" && git push)
