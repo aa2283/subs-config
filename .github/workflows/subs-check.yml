@@ -15,30 +15,30 @@ jobs:
       - name: Run subscription checker
         run: |
           mkdir -p ${{ github.workspace }}/output
-          
-          # 1. 启动后台观察者：监听日志文件，发现关键字就杀掉容器
-          (
-            echo ">>> 外部观察者已启动..."
-            while true; do
-              # 增加频率，每秒检查一次日志
-              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
-                echo -e "\n[观察者] 捕获到存盘信号，执行秒杀..."
-                docker stop checker
-                break
-              fi
-              # 如果容器已经自然停止，观察者也退出
-              if ! docker ps | grep -q "checker"; then break; fi
-              sleep 1
-            done
-          ) &
+          chmod -R 777 ${{ github.workspace }}/output
 
-          # 2. 前台运行容器：分配 TTY (-t) 以强制显示进度条
-          echo ">>> 正在启动检测引擎（显示实时进度）..."
-          docker run --name checker --rm -t \
+          echo ">>> 启动检测引擎 (带 TTY 实时进度显示) ..."
+          
+          # 1. 以后台模式启动容器，但保持 TTY 分配
+          docker run -d --name checker \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -e SUB_URLS="${{ secrets.SUB_URLS }}" \
-            ghcr.io/aa2283/subs-check:master || echo ">>> 容器已由观察者安全停止。"
+            -t ghcr.io/aa2283/subs-check:master
+
+          # 2. 实时跟随日志并显示进度，同时在检测到关键字时退出循环
+          # 使用 --until 1s 让 tail 能够被 read 捕获
+          docker logs -f checker | while read -r line
+          do
+            echo "$line"
+            if [[ "$line" == *"保存本地成功"* ]]; then
+              echo -e "\n>>> [系统] 捕获到完成信号，正在秒杀容器并进入下一步..."
+              docker stop checker
+              break
+            fi
+          done
+          
+          echo ">>> 容器已清理完毕。"
 
       - name: Checkout target repository
         uses: actions/checkout@v4
@@ -51,13 +51,13 @@ jobs:
         run: |
           mkdir -p target-repo/
           
-          # 直接搬运所有文件，不改名，保留你在 config.yaml 里的设置
-          cp -rv output/* target-repo/ || echo "警告：未找到输出文件"
+          # 3. 搬运所有文件，不改名，保留你在 config.yaml 里的定义
+          cp -rv output/* target-repo/ || echo ">>> 提示：未发现生成文件"
           
           cd target-repo
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
           git add .
-          git commit -m "自动更新订阅：同步结果" || echo "无变更"
+          git commit -m "自动更新订阅：同步最新结果" || echo ">>> 内容无变化，跳过推送"
           git push
