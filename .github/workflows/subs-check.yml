@@ -16,12 +16,12 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/output
           (
-            echo ">>> 极速监听器已启动..."
+            echo ">>> 极速监听器启动..."
             while true; do
               sleep 2
-              # 只要日志里出现“保存本地成功”，无论存的是哪个文件，都代表核心任务已完成
+              # 模糊匹配：只要日志出现“保存本地成功”即停止容器
               if docker logs checker 2>&1 | grep -q "保存本地成功"; then
-                echo -e "\n[监听器] 检测到文件已生成，正在强制停止容器..."
+                echo -e "\n[监听器] 检测到文件已生成，正在强制停止容器解锁下一步..."
                 docker stop checker
                 break
               fi
@@ -30,6 +30,7 @@ jobs:
           ) &
 
           echo ">>> 开始执行检测任务..."
+          # 这里会自动读取 config 文件夹下的 config.yaml
           docker run --name checker --rm \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
@@ -39,6 +40,7 @@ jobs:
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
+          # 你的结果存放仓库
           repository: aa2283/v2ray_configs
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo
@@ -47,13 +49,13 @@ jobs:
         run: |
           mkdir -p target-repo/
           
-          # 优先尝试复制 all.yaml (这是程序默认名)
+          # 寻找生成的 yaml 文件并统一重命名为 sub.yaml
           if [ -f "output/all.yaml" ]; then
             cp output/all.yaml target-repo/sub.yaml
           elif [ -f "output/sub.yaml" ]; then
             cp output/sub.yaml target-repo/sub.yaml
           else
-            echo "错误：未找到任何生成的 yaml 文件"
+            echo "错误：未找到任何生成的订阅文件"
             exit 1
           fi
           
@@ -61,6 +63,7 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
+          # 提交更改
           git add sub.yaml
-          git commit -m "更新订阅: sub.yaml" || echo "内容无变化"
+          git commit -m "自动更新订阅：sub.yaml" || echo "内容无变化"
           git push
