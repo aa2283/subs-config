@@ -14,44 +14,52 @@ jobs:
 
       - name: Run subscription checker
         run: |
-          # 1. 启动容器，分配 TTY 强制实时输出
-          docker run -d --name checker --rm -t \
+          # 1. 在后台启动一个“守护监听器”
+          # 它会每隔 5 秒巡检一次日志，发现保存成功就执行 docker stop
+          (
+            echo ">>> 监听器已启动..."
+            while true; do
+              sleep 5
+              # 检查容器日志是否包含成功关键字
+              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
+                echo -e "\n[监听器] 检测到文件保存成功，正在强制停止程序以进入上传步骤..."
+                docker stop checker
+                break
+              fi
+              # 如果容器因为其他原因已经不在运行了，监听器也自动退出
+              if ! docker ps | grep -q "checker"; then 
+                break 
+              fi
+            done
+          ) &
+
+          # 2. 在前台正式运行容器
+          # 不加 -d 也不接管道，这样 GitHub Actions 会 100% 实时显示进度条
+          echo ">>> 开始检测节点..."
+          docker run --name checker --rm \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master
+            ghcr.io/aa2283/subs-check:master || echo "容器已停止"
 
-          echo "正在实时监控检测进度..."
-          
-          # 2. 实时捕获日志
-          docker logs -f checker | while read -r line
-          do
-            # 实时打印日志
-            printf "%s\n" "$line"
-            
-            # 匹配结束关键字
-            if [[ "$line" == *"保存本地成功"* ]]; then
-              echo ">>> 检测完成，正在收尾..."
-              docker stop checker
-              break
-            fi
-          done
-          echo "程序已退出，准备同步数据。"
+          echo ">>> 检测步骤安全结束。"
 
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
-          token: ${{ secrets.PAT_TOKEN }}
+          token: ${{ secrets.PAT_TOKEN }} # 请确保已在 Secrets 中设置此 Token
           path: target-repo
 
       - name: Copy and commit changes
         run: |
-          # 确保输出目录不为空
+          # 确保输出目录存在并将结果复制到目标仓库
           mkdir -p output
-          cp -r output/* target-repo/ || echo "没有文件可复制"
+          cp -r output/* target-repo/ || echo "没有检测到新文件"
+          
           cd target-repo
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add .
-          git commit -m "更新订阅检查结果" || echo "没有变更需要提交"
+          # 提交更改，如果没有变化则跳过，防止报错
+          git commit -m "更新订阅检查结果" || echo "内容无变更，跳过提交"
           git push
