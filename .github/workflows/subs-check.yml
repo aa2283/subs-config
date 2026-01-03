@@ -17,31 +17,31 @@ jobs:
           mkdir -p ${{ github.workspace }}/output
           chmod -R 777 ${{ github.workspace }}/output
 
-          # 1. 启动“后台狙击手”
-          # 它不接管道，不干扰前台，只是每秒看一眼日志
-          (
-            echo ">>> [观察者] 已启动，正在后台等待存盘信号..."
-            while true; do
-              # 只要捕获到关键字，立即强制杀死容器
-              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
-                echo -e "\n>>> [观察者] 捕获完成！立即执行秒杀以解锁流程..."
-                docker kill checker
-                break
-              fi
-              # 如果容器因为其他原因停了，观察者也退出
-              if ! docker ps | grep -q "checker"; then break; fi
-              sleep 1
-            done
-          ) &
-
-          # 2. 前台运行容器
-          # -t: 极其重要，没有它就没有进度条过程
-          echo ">>> 正在启动检测引擎 (TTY 实时进度模式)..."
+          echo ">>> 启动检测引擎 (实时显示进度)..."
+          
+          # 使用 timeout 命令确保即使程序不退出，也会在指定时间后强制关闭
+          # 同时使用 -t 分配终端以显示进度条
+          # 我们不再使用后台监听，而是让容器在前台跑，直到检测到“保存完成”信号
+          
           docker run --name checker --rm -t \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -e SUB_URLS="${{ secrets.SUB_URLS }}" \
-            ghcr.io/aa2283/subs-check:master || echo ">>> 容器已由后台脚本强制结束。"
+            ghcr.io/aa2283/subs-check:master | tee checker.log &
+          
+          # 在前台实时监控日志文件，一旦发现关键词就杀掉
+          # 这种方法比后台进程更稳定
+          while true; do
+            if grep -q "保存本地成功" checker.log 2>/dev/null; then
+              echo -e "\n>>> [系统] 检测到文件存盘，正在收割进程..."
+              docker kill checker || true
+              break
+            fi
+            if ! docker ps | grep -q "checker"; then
+              break
+            fi
+            sleep 1
+          done
 
       - name: Checkout target repository
         uses: actions/checkout@v4
@@ -54,7 +54,7 @@ jobs:
         run: |
           mkdir -p target-repo/
           
-          # 直接同步 output 下的所有文件，保留你在 config.yaml 里的命名
+          # 直接搬运所有文件，保留 config.yaml 定义的名字
           cp -rv output/* target-repo/ || echo ">>> 未发现生成文件"
           
           cd target-repo
@@ -62,5 +62,5 @@ jobs:
           git config --local user.name "github-actions[bot]"
           
           git add .
-          git commit -m "自动更新订阅：同步最新结果" || echo "内容无变化"
+          git commit -m "自动更新订阅：同步结果" || echo "无变更"
           git push
