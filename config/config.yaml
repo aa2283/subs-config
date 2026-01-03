@@ -21,5 +21,5 @@ sub-store-port: ""
 
 # 订阅来源（这里保持空，通过 Actions 的环境变量注入）
 sub-urls:
-  - https://raw.githubusercontent.com/roosterkid/openproxylist/refs/heads/main/V2RAY_RAW.txt
+  - https://raw.githubusercontent.com/Pawdroid/Free-servers/refs/heads/main/sub
   
