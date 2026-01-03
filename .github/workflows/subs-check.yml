@@ -14,30 +14,31 @@ jobs:
 
       - name: Run subscription checker
         run: |
-          # 1. 创建输出目录并确保权限
           mkdir -p ${{ github.workspace }}/output
-          chmod -R 777 ${{ github.workspace }}/output
+          
+          # 1. 启动后台观察者：监听日志文件，发现关键字就杀掉容器
+          (
+            echo ">>> 外部观察者已启动..."
+            while true; do
+              # 增加频率，每秒检查一次日志
+              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
+                echo -e "\n[观察者] 捕获到存盘信号，执行秒杀..."
+                docker stop checker
+                break
+              fi
+              # 如果容器已经自然停止，观察者也退出
+              if ! docker ps | grep -q "checker"; then break; fi
+              sleep 1
+            done
+          ) &
 
-          # 2. 后台启动容器 (-d)，名字设为 subs_checker
-          docker run -d --name subs_checker --rm \
+          # 2. 前台运行容器：分配 TTY (-t) 以强制显示进度条
+          echo ">>> 正在启动检测引擎（显示实时进度）..."
+          docker run --name checker --rm -t \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -e SUB_URLS="${{ secrets.SUB_URLS }}" \
-            ghcr.io/aa2283/subs-check:master
-
-          # 3. 实时日志流监听：一旦发现“保存本地成功”，立即 kill
-          echo ">>> 正在监控实时日志..."
-          docker logs -f subs_checker | while read -r line
-          do
-            echo "$line"
-            # 只要日志中出现这个核心关键字
-            if [[ "$line" == *"保存本地成功"* ]]; then
-              echo ">>> [监听器] 检测到存盘信号，正在执行秒杀..."
-              docker stop subs_checker
-              break
-            fi
-          done
-          echo ">>> 容器已安全关闭，解锁下一步。"
+            ghcr.io/aa2283/subs-check:master || echo ">>> 容器已由观察者安全停止。"
 
       - name: Checkout target repository
         uses: actions/checkout@v4
@@ -50,14 +51,13 @@ jobs:
         run: |
           mkdir -p target-repo/
           
-          # 直接同步 output 文件夹下的所有文件（保持你在 config.yaml 里的命名）
-          cp -rv output/* target-repo/ || echo "警告：没有发现输出文件"
+          # 直接搬运所有文件，不改名，保留你在 config.yaml 里的设置
+          cp -rv output/* target-repo/ || echo "警告：未找到输出文件"
           
           cd target-repo
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 提交所有文件变更
           git add .
-          git commit -m "自动更新订阅：同步检测结果" || echo "内容无变化，跳过提交"
+          git commit -m "自动更新订阅：同步结果" || echo "无变更"
           git push
