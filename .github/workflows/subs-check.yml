@@ -12,22 +12,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run subscription checker
+- name: Run subscription checker
         run: |
-          # 1. 后台启动容器
-          docker run -d --name checker --rm \
+          # 1. 启动容器，添加 -t 参数分配一个伪终端 (TTY)，这通常能强制程序实时输出日志
+          docker run -d --name checker --rm -t \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          # 2. 监控日志并捕获关键字
-          echo "开始监控程序日志..."
-          docker logs -f checker | while read -r line
+          echo "正在实时监控检测进度..."
+          
+          # 2. 使用 stdbuf -oL 确保输出是行缓冲的，这样每一行进度条都会立刻显示
+          docker logs -f checker | stdbuf -oL while read -r line
           do
-            echo "$line"
-            # 匹配关键字
+            # 直接打印原始行，不加额外修饰，减少处理延迟
+            printf "%s\n" "$line"
+            
             if [[ "$line" == *"保存本地成功"* ]]; then
-              echo ">>> 检测到保存成功，执行 kill 脚本关闭容器..."
+              echo ">>> 检测完成，正在收尾..."
               docker stop checker
               break
             fi
