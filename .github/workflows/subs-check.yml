@@ -1,13 +1,27 @@
-- name: Run subscription checker
+name: Subscription Checker
+
+on:
+  schedule:
+    - cron: '15 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-subscriptions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run subscription checker
         run: |
           mkdir -p ${{ github.workspace }}/output
           (
-            echo ">>> 极速监听器启动..."
+            echo ">>> 极速监听器已启动..."
             while true; do
-              sleep 1
-              # 精简版下，我们只盯着 all.yaml 的生成
-              if docker logs checker 2>&1 | grep -q "保存本地成功 filepath=/app/output/all.yaml"; then
-                echo -e "\n[监听器] sub.yaml 已就绪，准备收工..."
+              sleep 2
+              # 只要日志里出现“保存本地成功”，无论存的是哪个文件，都代表核心任务已完成
+              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
+                echo -e "\n[监听器] 检测到文件已生成，正在强制停止容器..."
                 docker stop checker
                 break
               fi
@@ -15,9 +29,38 @@
             done
           ) &
 
-          echo ">>> 启动轻量化检测引擎..."
+          echo ">>> 开始执行检测任务..."
           docker run --name checker --rm \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -e SUB_URLS="${{ secrets.SUB_URLS }}" \
-            ghcr.io/aa2283/subs-check:master
+            ghcr.io/aa2283/subs-check:master || echo "容器已停止"
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: aa2283/v2ray_configs
+          token: ${{ secrets.PAT_TOKEN }}
+          path: target-repo
+
+      - name: Copy and commit changes
+        run: |
+          mkdir -p target-repo/
+          
+          # 优先尝试复制 all.yaml (这是程序默认名)
+          if [ -f "output/all.yaml" ]; then
+            cp output/all.yaml target-repo/sub.yaml
+          elif [ -f "output/sub.yaml" ]; then
+            cp output/sub.yaml target-repo/sub.yaml
+          else
+            echo "错误：未找到任何生成的 yaml 文件"
+            exit 1
+          fi
+          
+          cd target-repo
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          git add sub.yaml
+          git commit -m "更新订阅: sub.yaml" || echo "内容无变化"
+          git push
