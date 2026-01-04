@@ -44,19 +44,16 @@ jobs:
                    echo -e "\n[观察者] 进度真 100% (数字已对齐)，启动 2 分钟存盘缓冲..."
                 else
                    WAIT_TIME=300
-                   # 提取当前进度显示在日志里，方便查看
+                   # 提取当前进度显示在日志里
                    CURRENT_PROG=$(echo "$LOG_RAW" | grep -o "[0-9]*/[0-9]*" | tail -n 1)
                    echo -e "\n[观察者] 进度假 100% ($CURRENT_PROG)，最后一个节点卡死，启动 5 分钟强制强杀逻辑..."
                 fi
                 
-                # 启动后台倒计时进程
                 (
                   MAX_STEPS=$((WAIT_TIME / 10))
                   for ((i=1; i<=MAX_STEPS; i++)); do
                     sleep 10
-                    # 如果容器已经自己停了，倒计时立刻退出
                     if ! docker ps | grep -q "checker"; then exit 0; fi
-                    
                     PAST=$((i * 10))
                     LEFT=$((WAIT_TIME - PAST))
                     echo ">>> [倒计时] 已等待 ${PAST}s，剩余宽限 ${LEFT}s..."
@@ -90,11 +87,18 @@ jobs:
       - name: Copy and commit changes
         run: |
           cd target-repo
-          mkdir -p yml
-          rm -rf yml/*
-          cp -rv ../output/. yml/ || echo ">>> 未发现新文件"
+          
+          # 统一使用 yml 目录（你可以根据喜好改为 sub，但前后要一致）
+          TARGET_DIR="yml"
+          mkdir -p $TARGET_DIR
+          rm -rf $TARGET_DIR/*
+          cp -rv ../output/. $TARGET_DIR/ || echo ">>> 未发现新文件"
           
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add yml/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "自动更新订阅：同步结果" && git push)
+          
+          # 修正：add 对应的目录
+          git add $TARGET_DIR/
+          
+          # 提交并推送
+          git diff --quiet && git diff --staged --quiet || (git commit -m "自动更新订阅：同步结果至 $TARGET_DIR" && git push)
