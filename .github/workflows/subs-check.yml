@@ -90,9 +90,9 @@ jobs:
       - name: Copy and commit changes
         run: |
           cd target-repo
-          mkdir -p sub
-          rm -rf sub/*
-          cp -rv ../output/. sub/ || echo ">>> 未发现新文件"
+          mkdir -p yml
+          rm -rf yml/*
+          cp -rv ../output/. yml/ || echo ">>> 未发现新文件"
           
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
