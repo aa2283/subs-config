@@ -2,8 +2,8 @@ name: Subscription Checker
 
 on:
   schedule:
-    - cron: '15 4 * * *'  # 北京时间 12:15
-  workflow_dispatch:      # 允许手动触发
+    - cron: '15 4 * * *'
+  workflow_dispatch:
 
 jobs:
   check-subscriptions:
@@ -14,52 +14,87 @@ jobs:
 
       - name: Run subscription checker
         run: |
-          # 1. 在后台启动一个“守护监听器”
-          # 它会每隔 5 秒巡检一次日志，发现保存成功就执行 docker stop
+          mkdir -p ${{ github.workspace }}/output
+          chmod -R 777 ${{ github.workspace }}/output
+
+          # 1. 深度优化：双轨制智能观察者
           (
-            echo ">>> 监听器已启动..."
+            echo ">>> [观察者] 已启动，正在监控进度..."
+            TIMER_STARTED=false 
+            
             while true; do
-              sleep 5
-              # 检查容器日志是否包含成功关键字
-              if docker logs checker 2>&1 | grep -q "保存本地成功"; then
-                echo -e "\n[监听器] 检测到文件保存成功，正在强制停止程序以进入上传步骤..."
+              sleep 10
+              # 提取日志并彻底过滤干扰字符
+              LOG_RAW=$(docker logs checker 2>&1 | tail -n 5 | sed 's/\x1b\[[0-9;]*m//g')
+              
+              # A. 正常存盘信号（最快解锁路径）
+              if echo "$LOG_RAW" | grep -q "保存本地成功"; then
+                echo -e "\n[观察者] 捕获存盘信号，任务正常结束。"
                 docker stop checker
                 break
               fi
-              # 如果容器因为其他原因已经不在运行了，监听器也自动退出
-              if ! docker ps | grep -q "checker"; then 
-                break 
+
+              # B. 进度达 100.0% 时的双轨处理逻辑
+              if [[ "$TIMER_STARTED" = false ]] && echo "$LOG_RAW" | grep -q "100.0%"; then
+                TIMER_STARTED=true
+                
+                # 检查括号内的数字是否对齐，例如 (9431/9431)
+                if echo "$LOG_RAW" | grep -qE "\(([0-9]+)/\1\)"; then
+                   WAIT_TIME=120
+                   echo -e "\n[观察者] 进度真 100% (数字已对齐)，启动 2 分钟存盘缓冲..."
+                else
+                   WAIT_TIME=300
+                   # 提取当前进度显示在日志里，方便查看
+                   CURRENT_PROG=$(echo "$LOG_RAW" | grep -o "[0-9]*/[0-9]*" | tail -n 1)
+                   echo -e "\n[观察者] 进度假 100% ($CURRENT_PROG)，最后一个节点卡死，启动 5 分钟强制强杀逻辑..."
+                fi
+                
+                # 启动后台倒计时进程
+                (
+                  MAX_STEPS=$((WAIT_TIME / 10))
+                  for ((i=1; i<=MAX_STEPS; i++)); do
+                    sleep 10
+                    # 如果容器已经自己停了，倒计时立刻退出
+                    if ! docker ps | grep -q "checker"; then exit 0; fi
+                    
+                    PAST=$((i * 10))
+                    LEFT=$((WAIT_TIME - PAST))
+                    echo ">>> [倒计时] 已等待 ${PAST}s，剩余宽限 ${LEFT}s..."
+                  done
+                  
+                  if docker ps | grep -q "checker"; then
+                    echo ">>> [观察者] 时间到！强制停止容器，收割现有结果。"
+                    docker stop checker
+                  fi
+                ) &
               fi
+
+              if ! docker ps | grep -q "checker"; then break; fi
             done
           ) &
 
-          # 2. 在前台正式运行容器
-          # 不加 -d 也不接管道，这样 GitHub Actions 会 100% 实时显示进度条
-          echo ">>> 开始检测节点..."
-          docker run --name checker --rm \
+          # 2. 正式运行容器
+          docker run --name checker --rm -t \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master || echo "容器已停止"
-
-          echo ">>> 检测步骤安全结束。"
+            -e SUB_URLS="${{ secrets.SUB_URLS }}" \
+            ghcr.io/aa2283/subs-check:master || echo ">>> 容器已停止运行。"
 
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
-          token: ${{ secrets.PAT_TOKEN }} # 请确保已在 Secrets 中设置此 Token
+          token: ${{ secrets.PAT_TOKEN }}
           path: target-repo
 
       - name: Copy and commit changes
         run: |
-          # 确保输出目录存在并将结果复制到目标仓库
-          mkdir -p output
-          cp -r output/* target-repo/ || echo "没有检测到新文件"
-          
           cd target-repo
+          mkdir -p sub
+          rm -rf sub/*
+          cp -rv ../output/. sub/ || echo ">>> 未发现新文件"
+          
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add .
-          # 提交更改，如果没有变化则跳过，防止报错
-          git commit -m "更新订阅检查结果" || echo "内容无变更，跳过提交"
-          git push
+          git add sub/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "自动更新订阅：同步结果" && git push)
