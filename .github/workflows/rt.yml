@@ -1,4 +1,4 @@
-name: Subscription Checker 常驻版
+name: Subscription Checker (双端口常驻 & 自动同步版)
 
 on:
   schedule:
@@ -9,10 +9,10 @@ jobs:
   check-subscriptions:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 1. 准备配置文件
+      - name: 2. 准备配置文件 (Python 注入)
         run: |
           mkdir -p ${{ github.workspace }}/output
           mkdir -p ${{ github.workspace }}/temp_config
@@ -35,77 +35,111 @@ jobs:
               f.writelines(new_lines)
           "
 
-      - name: 2. 启动隧道并【隐藏】提取链接
+      - name: 3. 启动后端容器 (双端口映射)
         run: |
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-          # 转发 subs-check 内置的 8299 端口，彻底静默输出
-          curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
-          
-          echo "🔄 正在申请私密隧道域名..."
-          sleep 5
-          API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
-          if [ -n "$API_URL" ]; then
-            echo "::add-mask::$API_URL"
-            echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-            echo "✅ 隧道已建立（已脱敏保护）"
-          else
-            echo "❌ 隧道启动失败"
-            exit 1
-          fi
-
-      - name: 3. 同步域名至私有库 (用于 Cloudflare Worker 跳转)
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }} # 使用你已有的 Secret
-        run: |
-          # 假设你要同步到 aa2283/v2ray_configs 的 tunnel_url.txt
-          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
-          CONTENT=$(echo -n "${{ env.FINAL_API_URL }}" | base64 | tr -d '\n')
-          curl -s -o /dev/null -X PUT \
-            -H "Authorization: token $MY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"message\":\"update\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
-            "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt"
-          echo "🚀 域名已同步，可通过 Worker 访问。"
-
-      - name: 4. 常驻运行 15 分钟并自动收割
-        run: |
-          # 后台运行 Docker，注意映射 8299 端口
+          # 映射 8199 (Checker) 和 8299 (Sub-Store)
           docker run -d --name checker \
+            -p 8199:8199 \
             -p 8299:8299 \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
-
-          echo "⏳ 开始 15 分钟常驻监听..."
-          for i in {1..15}
-          do
-            echo ">>> 第 $i/15 分钟: 保持运行中..."
-            # 检查容器是否还在，如果中途崩溃则退出
-            if ! docker ps | grep -q 'checker'; then
-              echo "⚠️ 容器已意外停止"
+          
+          echo "⏳ 等待双服务初始化 (8199/8299)..."
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8199 > /dev/null && curl -s http://127.0.0.1:8299 > /dev/null; then
+              echo "✅ 双端口服务均已就绪！"
               break
             fi
-            sleep 60
+            echo "等待服务响应中... ($i/30)"
+            sleep 2
           done
 
-          echo "🛑 时间到，正在收割结果..."
-          docker kill checker || true
+      - name: 4. 开启隧道并【隐藏】提取链接
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
           
-      - name: 5. 检出目标仓库并推送结果
+          # 创建分流配置文件 (Ingress)，实现一个域名访问两个端口
+          # 根路径 / 映射到 8199 (检测界面)，/store 路径映射到 8299 (Sub-Store)
+          cat <<EOF > tunnel.yml
+          ingress:
+            - hostname: "*"
+              path: /check
+              service: http://localhost:8199
+            - hostname: "*"
+              service: http://localhost:8299
+            - service: http_status:404
+          EOF
+
+          # 启动隧道 (使用 nohup 确保后台运行且静默)
+          nohup ./cloudflared tunnel --config tunnel.yml run --url > tunnel.log 2>&1 &
+          
+          echo "🔄 正在申请多路由私密隧道域名..."
+          sleep 12
+          
+          # 提取域名
+          API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
+          if [ -n "$API_URL" ]; then
+            echo "::add-mask::$API_URL"
+            echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+            echo "✅ 隧道建立成功！"
+          else
+            echo "❌ 隧道域名提取失败，保底重试单端口模式..."
+            nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
+            sleep 10
+            API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
+            echo "::add-mask::$API_URL"
+            echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+          fi
+
+      - name: 5. 同步域名至私有库 (隐藏 Token)
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+          REPO: "aa2283/v2ray_configs"
+        run: |
+          set +x
+          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/$REPO/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
+          CONTENT=$(echo -n "${{ env.FINAL_API_URL }}" | base64 | tr -d '\n')
+          
+          curl -s -o /dev/null -X PUT \
+            -H "Authorization: token $MY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
+            "https://api.github.com/repos/$REPO/contents/tunnel_url.txt"
+          
+          echo "🚀 域名已同步。Worker 跳转已更新。"
+          set -x
+
+      - name: 6. 常驻监听 (保持运行 15 分钟)
+        run: |
+          echo "========================================================="
+          echo "🔗 Sub-Store 入口 (根路径): ${{ env.FINAL_API_URL }}"
+          echo "🔗 Checker 入口 (路径/check): ${{ env.FINAL_API_URL }}/check"
+          echo "========================================================="
+          echo "⏳ 15 分钟运行计时开始..."
+          for i in {1..15}
+          do
+            echo ">>> [持续运行] 第 $i/15 分钟"
+            # 简要打印日志痕迹防止 Action 掉线
+            docker logs --tail 3 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true
+            sleep 60
+          done
+          echo "🛑 时间到，正在停止容器并收割结果。"
+          docker kill checker || true
+
+      - name: 7. 检出目标仓库 (保存检测后的节点)
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo
 
-      - name: 6. 提交检测后的节点文件
+      - name: 8. 提交并推送最新节点
         run: |
           cd target-repo
           mkdir -p sub
           rm -f sub/* || true
-          # 拷贝 subs-check 运行后的结果
           cp -rv ../output/. sub/
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Action"
@@ -114,5 +148,5 @@ jobs:
             git commit -m "自动更新节点: $(date +'%Y-%m-%d %H:%M')"
             git push
           else
-            echo ">>> 无内容变动。"
+            echo ">>> 无节点变动，跳过推送。"
           fi
