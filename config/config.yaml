@@ -88,4 +88,3 @@ sub-urls-retry: 3
 # 如果用户想使用clash类型，那可以在支持的订阅链接结尾加上 &flag=clash.meta
 sub-urls:
   - {SUB_URLS}
-
