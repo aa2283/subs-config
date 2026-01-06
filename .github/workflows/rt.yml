@@ -40,6 +40,7 @@ jobs:
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           # 转发 subs-check 内置的 8299 端口，彻底静默输出
+          curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
           
           echo "🔄 正在申请私密隧道域名..."
