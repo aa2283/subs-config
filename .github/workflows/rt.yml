@@ -55,14 +55,26 @@ jobs:
             sleep 10
           done
 
-      - name: 4. 开启隧道并同步域名 (检测完后再开)
+      - name: 4. 开启分流隧道 (同时访问 8199/8299)
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          echo "📥 下载并建立隧道..."
+          echo "📥 下载并建立分流隧道..."
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
+
+          # 创建分流配置文件
+          cat <<EOF > tunnel.yml
+          ingress:
+            - hostname: "*"
+              path: /check
+              service: http://localhost:8199
+            - hostname: "*"
+              service: http://localhost:8299
+          EOF
+
+          # 使用配置文件启动隧道
+          nohup ./cloudflared tunnel --config tunnel.yml run --url > tunnel.log 2>&1 &
           
           echo "🔄 捕获域名中..."
           for i in {1..20}; do
@@ -70,12 +82,13 @@ jobs:
             if [ -n "$API_URL" ]; then
               echo "::add-mask::$API_URL"
               echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+              
+              # 同步到私有库
               SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
               CONTENT=$(echo -n "$API_URL" | base64 | tr -d '\n')
               curl -s -o /dev/null -X PUT -H "Authorization: token $MY_TOKEN" -H "Content-Type: application/json" \
                 -d "{\"message\":\"Update API\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
                 "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt"
-              echo "✅ 隧道域名同步成功！"
               break
             fi
             sleep 3
