@@ -71,43 +71,54 @@ jobs:
             exit 1
           fi
 
-      - name: 4. 开启隧道并【隐藏】提取链接
+      - name: 4. 开启隧道并【动态捕获】域名
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          # 1. 下载 cloudflared
+          echo "📥 正在下载 cloudflared..."
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # 创建分流配置文件 (Ingress)，实现一个域名访问两个端口
-          # 根路径 / 映射到 8199 (检测界面)，/store 路径映射到 8299 (Sub-Store)
-          cat <<EOF > tunnel.yml
-          ingress:
-            - hostname: "*"
-              path: /check
-              service: http://localhost:8199
-            - hostname: "*"
-              service: http://localhost:8299
-            - service: http_status:404
-          EOF
-
-          # 启动隧道 (使用 nohup 确保后台运行且静默)
-          nohup ./cloudflared tunnel --config tunnel.yml run --url > tunnel.log 2>&1 &
+          # 2. 启动隧道并重定向所有日志到文件
+          echo "🚀 启动隧道中..."
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel.log > /dev/null 2>&1 &
           
-          echo "🔄 正在申请多路由私密隧道域名..."
-          sleep 12
-          
-          # 提取域名
-          API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
-          if [ -n "$API_URL" ]; then
-            echo "::add-mask::$API_URL"
-            echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-            echo "✅ 隧道建立成功！"
-          else
-            echo "❌ 隧道域名提取失败，保底重试单端口模式..."
-            nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
-            sleep 10
+          # 3. 【核心修复】循环检测域名是否生成（最长等待 60 秒）
+          echo "🔄 正在等待域名分配 (最多 60 秒)..."
+          API_URL=""
+          for i in {1..20}; do
+            # 从日志中提取 trycloudflare.com 链接
             API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
-            echo "::add-mask::$API_URL"
-            echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+            
+            if [ -n "$API_URL" ]; then
+              echo "✅ 成功捕获域名: $API_URL"
+              echo "::add-mask::$API_URL"
+              echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+              break
+            fi
+            
+            echo "⏱️ 域名生成中... (第 $i 次尝试)"
+            sleep 3
+          done
+
+          # 4. 如果 60 秒后还没拿到域名，打印日志排查
+          if [ -z "$API_URL" ]; then
+            echo "❌ 隧道域名获取超时！原始日志如下："
+            cat tunnel.log
+            exit 1
           fi
+
+          # 5. 同步到私有库 (这里也优化了，防止 API 报错)
+          echo "📤 同步域名到私有库..."
+          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
+          CONTENT=$(echo -n "$API_URL" | base64 | tr -d '\n')
+          
+          curl -s -o /dev/null -X PUT \
+            -H "Authorization: token $MY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"message\":\"Update API\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
+            "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt"
 
       - name: 5. 同步域名至私有库 (隐藏 Token)
         env:
@@ -127,21 +138,39 @@ jobs:
           echo "🚀 域名已同步。Worker 跳转已更新。"
           set -x
 
-      - name: 6. 常驻监听 (保持运行 15 分钟)
+      - name: 6. 智能监听 (常驻运行并自动收割)
         run: |
-          echo "========================================================="
-          echo "🔗 Sub-Store 入口 (根路径): ${{ env.FINAL_API_URL }}"
-          echo "🔗 Checker 入口 (路径/check): ${{ env.FINAL_API_URL }}/check"
-          echo "========================================================="
-          echo "⏳ 15 分钟运行计时开始..."
-          for i in {1..15}
-          do
+          echo "🚀 系统已打通，开始监控检测进度..."
+          echo "⏳ 设定的最长等待时间为 15 分钟，但检测完成后会自动提前结束。"
+          
+          for i in {1..15}; do
             echo ">>> [持续运行] 第 $i/15 分钟"
-            # 简要打印日志痕迹防止 Action 掉线
-            docker logs --tail 3 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true
+            
+            # 获取最新日志
+            CURRENT_LOG=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+            
+            # 打印简要进度给用户看
+            echo "$CURRENT_LOG" | grep "进度:" | tail -n 1 || true
+            
+            # 【核心逻辑】检测到保存成功信号，提前跳出循环
+            if echo "$CURRENT_LOG" | grep -q "保存本地成功"; then
+              echo "========================================================="
+              echo "✅ 检测到程序已完成存盘 (信号: 保存本地成功)！"
+              echo "🚀 正在提前收割检测结果，无需继续等待。"
+              echo "========================================================="
+              break
+            fi
+            
+            # 如果容器已经挂了，也跳出
+            if ! docker ps | grep -q 'checker'; then
+              echo "⚠️ 容器已停止运行。"
+              break
+            fi
+            
             sleep 60
           done
-          echo "🛑 时间到，正在停止容器并收割结果。"
+
+          echo "🛑 正在关闭容器，准备推送结果..."
           docker kill checker || true
 
       - name: 7. 检出目标仓库 (保存检测后的节点)
