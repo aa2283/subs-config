@@ -35,9 +35,9 @@ jobs:
               f.writelines(new_lines)
           "
 
-      - name: 3. 启动后端容器 (双端口映射)
+      - name: 3. 启动后端容器 (带日志诊断)
         run: |
-          # 映射 8199 (Checker) 和 8299 (Sub-Store)
+          # 1. 启动容器
           docker run -d --name checker \
             -p 8199:8199 \
             -p 8299:8299 \
@@ -45,15 +45,31 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
           
-          echo "⏳ 等待双服务初始化 (8199/8299)..."
+          echo "⏳ 正在诊断服务启动情况..."
+          
+          # 2. 循环检测的同时打印最后几行日志，看报错信息
           for i in {1..30}; do
-            if curl -s http://127.0.0.1:8199 > /dev/null && curl -s http://127.0.0.1:8299 > /dev/null; then
-              echo "✅ 双端口服务均已就绪！"
+            # 打印容器最新的 5 行日志（去掉颜色代码）
+            docker logs --tail 5 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true
+            
+            # 检测端口
+            if curl -s http://127.0.0.1:8299 > /dev/null; then
+              echo "✅ Sub-Store (8299) 已就绪！"
+              # 如果 8199 也需要，可以加上检测，或者只要 8299 活了就跳出
               break
             fi
+            
+            echo "------------------------------------"
             echo "等待服务响应中... ($i/30)"
-            sleep 2
+            sleep 3
           done
+
+          # 3. 如果最后还是没成功，强制打印所有日志并报错
+          if ! curl -s http://127.0.0.1:8299 > /dev/null; then
+            echo "❌ 服务启动超时！以下是完整容器日志："
+            docker logs checker
+            exit 1
+          fi
 
       - name: 4. 开启隧道并【隐藏】提取链接
         run: |
