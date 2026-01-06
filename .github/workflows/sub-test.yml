@@ -1,4 +1,4 @@
-name: Subscription Checker
+name: Subscription Checker 测试
 
 on:
   schedule:
