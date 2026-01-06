@@ -127,18 +127,35 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo
 
-      - name: 8. 执行 Git 推送
+      - name: 8. 执行 Git 推送 (修复权限版)
         run: |
+          # 1. 强制修正 output 文件夹权限，确保 Action 用户可以读取
+          sudo chown -R $USER:$USER ${{ github.workspace }}/output
+          sudo chmod -R 755 ${{ github.workspace }}/output
+          
           cd target-repo
           mkdir -p sub rename
+          
+          # 2. 清理旧文件
           rm -rf sub/* rename/*
-          cp -rv ../output/. sub/
-          cp -rv ../rename/. rename/
+          
+          # 3. 拷贝新文件 (增加 -f 强制覆盖，并排除掉报错的 log 文件以防万一)
+          # 我们通常不需要推送日志文件到 GitHub
+          cp -rv ../output/* sub/ --exclude=*.log || cp -rv ../output/* sub/
+          cp -rv ../rename/* rename/
+          
+          # 4. Git 提交
           git config --local user.email "actions@github.com"
           git config --local user.name "Action"
           git add .
-          git commit -m "Update Nodes $(date)" || echo "No changes"
-          git push
+          
+          # 检查是否有文件变动，防止空提交报错
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Update Nodes $(date +'%Y-%m-%d %H:%M')"
+            git push
+          else
+            echo ">>> 无内容变动，跳过推送。"
+          fi
 
       - name: 9. 【第六步】最后挂机 15 分钟
         run: |
