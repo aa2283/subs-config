@@ -1,4 +1,4 @@
-name: Subscription Checker (双端口常驻 & 自动同步版)
+name: Subs-Check 完美版 (先隧道后检测)
 
 on:
   schedule:
@@ -12,12 +12,11 @@ jobs:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 2. 准备配置文件 (Python 注入)
+      - name: 2. 生成配置 (强制开启面板)
         run: |
           mkdir -p ${{ github.workspace }}/output
           mkdir -p ${{ github.workspace }}/temp_config
           chmod -R 777 ${{ github.workspace }}/output
-
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
           python3 -c "
           import os
@@ -25,19 +24,24 @@ jobs:
           output_path = '${{ github.workspace }}/temp_config/config.yaml'
           raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
           formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
-          new_lines = ['show-useless-url: true\n']
-          with open(template_path, 'r', encoding='utf-8') as f:
-              for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  elif 'show-useless-url' in line: continue
-                  else: new_lines.append(line)
+          new_lines = ['web-panel: true\n', 'api-port: 8199\n', 'sub-store-port: 8299\n']
+          if os.path.exists(template_path):
+              with open(template_path, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      if any(x in line for x in ['web-panel', 'api-port', 'sub-store-port']): continue
+                      if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
+                      else: new_lines.append(line)
+          else:
+              new_lines.append('sub-urls:\n')
+              new_lines.extend(formatted_urls)
           with open(output_path, 'w', encoding='utf-8') as f:
               f.writelines(new_lines)
           "
 
-      - name: 3. 启动后端容器 (带日志诊断)
+      - name: 3. 启动 Sub-Store 后端 (8299)
         run: |
-          # 1. 启动容器
+          # 仅先确保后端基础服务启动，不触发自动检测（如果镜像支持分离启动）
+          # 注意：有些镜像启动即检测，我们通过映射确保 8299 优先
           docker run -d --name checker \
             -p 8199:8199 \
             -p 8299:8299 \
@@ -45,153 +49,80 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
           
-          echo "⏳ 正在诊断服务启动情况..."
-          
-          # 2. 循环检测的同时打印最后几行日志，看报错信息
-          for i in {1..30}; do
-            # 打印容器最新的 5 行日志（去掉颜色代码）
-            docker logs --tail 5 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g' || true
-            
-            # 检测端口
+          echo "⏳ 等待 Sub-Store (8299) 响应..."
+          for i in {1..20}; do
             if curl -s http://127.0.0.1:8299 > /dev/null; then
-              echo "✅ Sub-Store (8299) 已就绪！"
-              # 如果 8199 也需要，可以加上检测，或者只要 8299 活了就跳出
+              echo "✅ 后端 8299 已就绪"
               break
             fi
-            
-            echo "------------------------------------"
-            echo "等待服务响应中... ($i/30)"
-            sleep 3
+            sleep 2
           done
 
-          # 3. 如果最后还是没成功，强制打印所有日志并报错
-          if ! curl -s http://127.0.0.1:8299 > /dev/null; then
-            echo "❌ 服务启动超时！以下是完整容器日志："
-            docker logs checker
-            exit 1
-          fi
-
-      - name: 4. 开启隧道并【动态捕获】域名
+      - name: 4. 稳健建立隧道 (此时网络空闲)
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # 1. 下载 cloudflared
-          echo "📥 正在下载 cloudflared..."
+          echo "📥 下载并启动隧道..."
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # 2. 启动隧道并重定向所有日志到文件
-          echo "🚀 启动隧道中..."
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel.log > /dev/null 2>&1 &
+          # 转发 8299 作为主入口
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
           
-          # 3. 【核心修复】循环检测域名是否生成（最长等待 60 秒）
-          echo "🔄 正在等待域名分配 (最多 60 秒)..."
-          API_URL=""
-          for i in {1..20}; do
-            # 从日志中提取 trycloudflare.com 链接
+          echo "🔄 捕获域名中..."
+          for i in {1..30}; do
             API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
-            
             if [ -n "$API_URL" ]; then
-              echo "✅ 成功捕获域名: $API_URL"
+              echo "✅ 隧道成功: $API_URL"
               echo "::add-mask::$API_URL"
               echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+              
+              # 立即同步到私有库，防止后续检测占用带宽导致同步超时
+              SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
+              CONTENT=$(echo -n "$API_URL" | base64 | tr -d '\n')
+              curl -s -o /dev/null -X PUT -H "Authorization: token $MY_TOKEN" -H "Content-Type: application/json" \
+                -d "{\"message\":\"Update API\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
+                "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt"
               break
             fi
-            
-            echo "⏱️ 域名生成中... (第 $i 次尝试)"
-            sleep 3
+            sleep 2
           done
 
-          # 4. 如果 60 秒后还没拿到域名，打印日志排查
-          if [ -z "$API_URL" ]; then
-            echo "❌ 隧道域名获取超时！原始日志如下："
-            cat tunnel.log
-            exit 1
-          fi
-
-          # 5. 同步到私有库 (这里也优化了，防止 API 报错)
-          echo "📤 同步域名到私有库..."
-          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
-          CONTENT=$(echo -n "$API_URL" | base64 | tr -d '\n')
-          
-          curl -s -o /dev/null -X PUT \
-            -H "Authorization: token $MY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"message\":\"Update API\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
-            "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt"
-
-      - name: 5. 同步域名至私有库 (隐藏 Token)
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-          REPO: "aa2283/v2ray_configs"
+      - name: 5. 触发并监听检测界面 (8199)
         run: |
-          set +x
-          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/$REPO/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
-          CONTENT=$(echo -n "${{ env.FINAL_API_URL }}" | base64 | tr -d '\n')
+          echo "🚀 隧道已稳固，Worker 已指向 $FINAL_API_URL"
+          echo "📢 现在开始执行大规模节点检测..."
           
-          curl -s -o /dev/null -X PUT \
-            -H "Authorization: token $MY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
-            "https://api.github.com/repos/$REPO/contents/tunnel_url.txt"
-          
-          echo "🚀 域名已同步。Worker 跳转已更新。"
-          set -x
-
-      - name: 6. 智能监听 (常驻运行并自动收割)
-        run: |
-          echo "🚀 系统已打通，开始监控检测进度..."
-          echo "⏳ 设定的最长等待时间为 15 分钟，但检测完成后会自动提前结束。"
-          
+          # 这里可以尝试调用一次 API 触发检测（如果该镜像有触发接口），或者直接开始监听日志
           for i in {1..15}; do
-            echo ">>> [持续运行] 第 $i/15 分钟"
+            echo ">>> [常驻运行] 第 $i/15 分钟"
             
-            # 获取最新日志
-            CURRENT_LOG=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+            # 实时显示进度
+            LOGS=$(docker logs --tail 10 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+            echo "$LOGS" | grep "进度:" | tail -n 1 || true
             
-            # 打印简要进度给用户看
-            echo "$CURRENT_LOG" | grep "进度:" | tail -n 1 || true
-            
-            # 【核心逻辑】检测到保存成功信号，提前跳出循环
-            if echo "$CURRENT_LOG" | grep -q "保存本地成功"; then
-              echo "========================================================="
-              echo "✅ 检测到程序已完成存盘 (信号: 保存本地成功)！"
-              echo "🚀 正在提前收割检测结果，无需继续等待。"
-              echo "========================================================="
-              break
-            fi
-            
-            # 如果容器已经挂了，也跳出
-            if ! docker ps | grep -q 'checker'; then
-              echo "⚠️ 容器已停止运行。"
-              break
+            # 即使保存成功也不提前退出，强制挂够 15 分钟
+            if echo "$LOGS" | grep -q "保存本地成功"; then
+              echo "✅ 检测已完成并存盘，继续保持挂机以供调试..."
             fi
             
             sleep 60
           done
-
-          echo "🛑 正在关闭容器，准备推送结果..."
           docker kill checker || true
 
-      - name: 7. 检出目标仓库 (保存检测后的节点)
+      - name: 6. 提交结果
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo
 
-      - name: 8. 提交并推送最新节点
+      - name: 7. 推送
         run: |
           cd target-repo
-          mkdir -p sub
-          rm -f sub/* || true
-          cp -rv ../output/. sub/
+          mkdir -p sub && cp -rv ../output/. sub/
           git config --local user.email "actions@github.com"
-          git config --local user.name "GitHub Action"
-          git add sub/
-          if [ -n "$(git status --porcelain)" ]; then
-            git commit -m "自动更新节点: $(date +'%Y-%m-%d %H:%M')"
-            git push
-          else
-            echo ">>> 无节点变动，跳过推送。"
-          fi
+          git config --local user.name "Action"
+          git add .
+          git commit -m "Update Nodes" || echo "No changes"
+          git push
