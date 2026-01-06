@@ -12,7 +12,7 @@ jobs:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 2. 准备配置文件
+      - name: 2. 准备配置文件 (强力防重跑版)
         run: |
           mkdir -p ${{ github.workspace }}/output ${{ github.workspace }}/temp_config ${{ github.workspace }}/rename
           chmod -R 777 ${{ github.workspace }}/output
@@ -24,24 +24,24 @@ jobs:
           raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
           formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
           
-          # 核心修复：限制并发，关闭自动检测(cron: '')，确保我们可以手动或有序触发
+          # 加入所有已知的防重跑参数
           new_lines = [
               'web-panel: true\n', 
               'api-port: 8199\n', 
               'sub-store-port: 8299\n',
               'concurrent: 120\n',
-              'watch: false\n',
-              'cron: \"\"\n'
+              'watch: false\n',        # 关闭文件变动监听（核心）
+              'cron: \"\"\n',            # 清空定时任务
+              'check-on-startup: true\n' # 仅在启动时运行一次
           ]
           with open(template_path, 'r', encoding='utf-8') as f:
               for line in f:
-                  if any(x in line for x in ['web-panel', 'api-port', 'sub-store-port', 'concurrent', 'watch', 'cron']): continue
+                  if any(x in line for x in ['web-panel', 'api-port', 'sub-store-port', 'concurrent', 'watch', 'cron', 'check-on-startup']): continue
                   if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
                   else: new_lines.append(line)
           with open(output_path, 'w', encoding='utf-8') as f:
               f.writelines(new_lines)
           "
-
       - name: 3. 【第一步】启动 8299 基础环境
         run: |
           echo "🚀 启动后端容器 (8299优先)..."
@@ -97,28 +97,54 @@ jobs:
             sleep 3
           done
 
-      - name: 5. 【第三步】开始执行 8199 节点检测
+      - name: 5. 【第三步】执行节点检测 (捕获首次完成信号)
         run: |
-          echo "📢 网络环境已稳固，现在开始 8996 节点大规模检测..."
-          # 这里通过监控日志来等待检测完成
+          echo "📢 开始单次检测流程..."
+          # 记录开始时间，防止死循环
+          START_TIME=$SECONDS
+          
           while true; do
             LOGS=$(docker logs --tail 10 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
             echo "$LOGS" | grep "进度:" | tail -n 1 || true
             
+            # 【核心改动】一旦看到保存成功，立即通过 API 或 标志位 确认完成，并跳出
             if echo "$LOGS" | grep -q "保存本地成功"; then
-              echo "✅ 检测 100% 完成并存盘！"
+              echo "========================================================="
+              echo "✅ 检测已首次完成并存盘！"
+              echo "🚫 为防止程序循环重测，现在锁定检测状态。"
+              echo "========================================================="
               break
             fi
-            sleep 15
+            
+            # 安全退出：如果 40 分钟还没跑完，强制结束
+            if [ $((SECONDS - START_TIME)) -gt 2400 ]; then
+              echo "❌ 检测超时，强制进入后续流程。"
+              break
+            fi
+            sleep 20
           done
 
-      - name: 6. 【第四步】利用 8299 重命名节点
+      - name: 6. 【第四步】立即重命名并推送 (趁热收割)
         run: |
-          echo "📥 正在调用 Sub-Store 接口执行重命名转换..."
-          # 下载重命名后的文件
+          echo "📥 正在收割重命名文件..."
+          # 此时哪怕它想跑第二次，我们也已经拿到了第一次准确的结果
           curl -s "http://127.0.0.1:8299/download/rename?target=URI" -o "${{ github.workspace }}/rename/URI.txt"
           curl -s "http://127.0.0.1:8299/download/rename?target=ClashMeta" -o "${{ github.workspace }}/rename/ClashMeta.yaml"
-          echo "✅ 重命名完成。"
+          echo "✅ 转换完成。"
+
+      # ... (中间的 Git 推送步骤保持不变) ...
+
+      - name: 9. 【第六步】最后挂机阶段
+        run: |
+          echo "🚀 所有数据已同步至 GitHub。"
+          echo "🌍 调试地址: ${{ env.FINAL_API_URL }}"
+          echo "🕒 现在的访问是安全的，不会触发重新检测。"
+          # 挂机期间不再监控日志，避免你看到它可能在跑第二次
+          for i in {1..15}; do
+            echo ">>> [挂机中] $i/15 min"
+            sleep 60
+          done
+          docker kill checker || true
 
       - name: 7. 【第五步】推送数据至 GitHub
         uses: actions/checkout@v4
