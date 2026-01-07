@@ -184,7 +184,6 @@ jobs:
             echo ">>> 第 $i 次检查 (监听 sub 订阅)..."
             
             # 1. 强制激活后端 API 状态
-            timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
             curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
             sleep 2
             
