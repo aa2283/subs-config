@@ -79,27 +79,27 @@ jobs:
           echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
           
           
-      - name: 3. 后台启动检测与服务一体化
+      - name: 3. 启动后台服务 (异步模式)
         run: |
-          # 1. 绝对路径初始化
           ROOT_DIR=$(pwd)
           mkdir -p $ROOT_DIR/output $ROOT_DIR/temp_config
           sudo chmod -R 777 $ROOT_DIR/output $ROOT_DIR/temp_config
 
-          # 2. 强力清理旧容器（如果有）
+          # 强行注入配置，确保后端 Web 界面能直接起来
+          echo "show-useless-url: true" > $ROOT_DIR/temp_config/config.yaml
+
           docker rm -f substore-svc 2>/dev/null || true
 
-          # 3. 启动后台容器 (注意映射：将 output 映射到容器内所有可能读取的地方)
+          # 启动后台容器
           docker run -d --name substore-svc \
             -p 8299:8299 \
             -v $ROOT_DIR/temp_config:/app/config \
             -v $ROOT_DIR/output:/app/output \
-            -v $ROOT_DIR/output:/app/data \
             ghcr.io/aa2283/subs-check:master
 
-          echo "⏳ 正在后台执行节点检测..."
-          # 4. 关键：等待检测结果文件出现 (假设检测完会生成 result.txt)
-          timeout 120s bash -c "until [ -f $ROOT_DIR/output/result.txt ]; do sleep 5; done" || echo "检测耗时较长，继续下一步..."
+          echo "🚀 后台容器已启动！"
+          echo "💡 提示：检测正在后台进行，我们无需等待，直接进入下一步开启隧道。"
+          sleep 5 # 给容器一点初始化的时间
 
       - name: 4. 检出私密仓库 (不影响后台容器)
         uses: actions/checkout@v4
