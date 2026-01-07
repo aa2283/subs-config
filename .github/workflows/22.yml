@@ -81,8 +81,20 @@ jobs:
           REPO: "aa2283/v2ray_configs"
           FILE: "tunnel_url.txt"
         run: |
-          CURRENT_URL="${{ env.FINAL_API_URL }}"
+          # 提取纯净 URL，去除可能混入的文件名前缀
+          CURRENT_URL=$(echo "${{ env.FINAL_API_URL }}" | grep -oE 'https://.*\.trycloudflare\.com')
+          
           if [ -z "$CURRENT_URL" ]; then echo "域名提取失败" && exit 0; fi
           
           echo "🔄 同步域名至 $REPO ..."
-          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/$REPO/contents/$FILE" | grep -o '"sha": "[^"]*' | cut
+          
+          # 获取文件的 SHA
+          FILE_DATA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/$REPO/contents/$FILE")
+          SHA=$(echo "$FILE_DATA" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
+          
+          CONTENT=$(echo -n "$CURRENT_URL" | base64 | tr -d '\n')
+          
+          curl -s -X PUT -H "Authorization: token $MY_TOKEN" \
+            -d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
+            "https://api.github.com/repos/$REPO/contents/$FILE"
+          echo "✅ 域名上报完成"
