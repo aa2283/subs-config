@@ -79,36 +79,35 @@ jobs:
           echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
           
           
-      - name: 3. 后台启动检测与服务 (不 Kill)
+      - name: 3. 后台启动检测与服务一体化
         run: |
-          mkdir -p ${{ github.workspace }}/output
-          sudo chmod -R 777 ${{ github.workspace }}/output
-          
-          # 加上 -d 参数，让它在后台跑，Actions 会立刻跳到第 4 步
+          # 1. 绝对路径初始化
+          ROOT_DIR=$(pwd)
+          mkdir -p $ROOT_DIR/output $ROOT_DIR/temp_config
+          sudo chmod -R 777 $ROOT_DIR/output $ROOT_DIR/temp_config
+
+          # 2. 强力清理旧容器（如果有）
+          docker rm -f substore-svc 2>/dev/null || true
+
+          # 3. 启动后台容器 (注意映射：将 output 映射到容器内所有可能读取的地方)
           docker run -d --name substore-svc \
             -p 8299:8299 \
-            -v ${{ github.workspace }}/temp_config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
+            -v $ROOT_DIR/temp_config:/app/config \
+            -v $ROOT_DIR/output:/app/output \
+            -v $ROOT_DIR/output:/app/data \
             ghcr.io/aa2283/subs-check:master
 
-          echo "⏳ 容器已在后台启动，正在等待检测任务完成..."
-          
-          # 关键：这里用一个循环来判断检测是否完成（比如判断 output 里是否生成了文件）
-          # 这样既能保证进下一步时有数据，又不会把容器杀掉
-          for i in {1..30}; do
-            if [ -f "${{ github.workspace }}/output/result.txt" ] || [ -f "${{ github.workspace }}/output/all.yaml" ]; then
-              echo "✅ 检测已完成，节点已生成！"
-              break
-            fi
-            echo "正在检测中... ($i/30)"
-            sleep 10
-          done
+          echo "⏳ 正在后台执行节点检测..."
+          # 4. 关键：等待检测结果文件出现 (假设检测完会生成 result.txt)
+          timeout 120s bash -c "until [ -f $ROOT_DIR/output/result.txt ]; do sleep 5; done" || echo "检测耗时较长，继续下一步..."
 
-      - name: 4. sub-store 检出代码
+      - name: 4. 检出私密仓库 (不影响后台容器)
         uses: actions/checkout@v4
         with:
+          repository: aa2283/v2ray_configs
           token: ${{ secrets.PAT_TOKEN }}
-          fetch-depth: 0
+          path: target_repo_sync
+          clean: false  # 防止清理 output 目录
 
       - name: 5. 路径对齐与服务启动
         run: |
