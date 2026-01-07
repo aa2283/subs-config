@@ -74,7 +74,7 @@ jobs:
           docker run --name checker --rm -i \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
+            -p 8299:8299 ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
           
           echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
           
@@ -102,16 +102,7 @@ jobs:
             echo ">>> 无内容变动，跳过推送。"
           fi
 
-
-      - name: 2. 启动服务 (挂载持久化配置)
-        run: |
-          mkdir -p sub-store-data
-          docker run --name checker --rm -i \
-            -v ${{ github.workspace }}/temp_config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            -p 8299:8299 ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
-           sleep 15
-
+          
       - name: 3. 开启隧道并【彻底静默】提取链接
         run: |
           # 1. 下载 cloudflared
