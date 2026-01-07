@@ -108,7 +108,7 @@ jobs:
       - name: 1. 检出代码
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.MY_PAT }}
+          token: ${{ secrets.PAT_TOKEN }}
           fetch-depth: 0
 
       - name: 2. 启动服务 (挂载持久化配置)
@@ -117,7 +117,7 @@ jobs:
           docker run --name checker --rm -i \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
+            -p 8299:8299 ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
            sleep 15
 
       - name: 3. 开启隧道并【彻底静默】提取链接
@@ -128,7 +128,7 @@ jobs:
 
           # 2. 启动隧道：将所有输出 (stdout & stderr) 全部重定向到 backend.log
           # 使用 > backend.log 2>&1 确保控制台没有任何 cloudflared 的原始输出
-          nohup ./cloudflared tunnel --url http://127.0.0.1:3000 --logfile backend.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > /dev/null 2>&1 &
           
           echo "🔄 正在申请私密隧道域名..."
           
@@ -161,7 +161,7 @@ jobs:
       - name: 5. 动态域名同步至私有库 (全静默上报)
         # 这里的环境变量会被 GitHub Actions 自动掩码，但为了双重保险，我们操作时要小心
         env:
-          MY_TOKEN: ${{ secrets.MY_PAT }}
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
           REPO: "aa2283/v2ray_configs"
           FILE: "tunnel_url.txt"
         run: |
@@ -197,15 +197,15 @@ jobs:
           
       - name: 4. 精准监听下载链接并实时推送
         env:
-          MY_TOKEN: ${{ secrets.MY_PAT }}
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           for i in {1..15}
           do
             echo ">>> 第 $i 次检查 (监听 sub 订阅)..."
             
             # 1. 强制激活后端 API 状态
-            timeout 60s bash -c 'until curl -s http://127.0.0.1:3000 > /dev/null; do sleep 2; done'
-            curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:3000"
+            timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
+            curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
             sleep 2
             
             # 2. 抓取两个目标格式到临时文件
