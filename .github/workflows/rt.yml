@@ -97,7 +97,7 @@ jobs:
           mkdir -p sub-store-data
           docker run -d --name substore-svc \
             -v $(pwd)/sub-store-data:/opt/app/data \
-            -p 8299:8299
+            -p 8299:8299 ghcr.io/aa2283/subs-check:master
           sleep 15
 
       - name: 6. sub-store 开启隧道并【彻底静默】提取链接
