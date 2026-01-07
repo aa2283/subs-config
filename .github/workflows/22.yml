@@ -210,8 +210,8 @@ jobs:
             
             # 2. 抓取两个目标格式到临时文件
             # 如果你的订阅名不叫 sub，请把下面 URL 里的 sub 改掉
-            curl -s "http://127.0.0.1:3000/download/sub?target=ClashMeta" -o subs/new_clash.yaml
-            curl -s "http://127.0.0.1:3000/download/sub?target=URI" -o subs/new_uri.txt
+            curl -s "http://127.0.0.1:8299/download/sub?target=ClashMeta" -o subs/new_clash.yaml
+            curl -s "http://127.0.0.1:8299/download/sub?target=URI" -o subs/new_uri.txt
             
             # 3. 校验数据有效性 (防止抓到报错网页)
             if grep -q "proxies" subs/new_clash.yaml || grep -q "://" subs/new_uri.txt; then
