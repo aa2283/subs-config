@@ -86,29 +86,8 @@ jobs:
           git clone --quiet https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git target-repo-sync >/dev/null 2>&1 || true
           echo "✅ Target repo ready (Private)"
           
-      - name: 5.
-        run: |
-          # 1. 准备工作 (保持 Python 注入)
-          mkdir -p ${{ github.workspace }}/output
-          mkdir -p ${{ github.workspace }}/temp_config
-          chmod -R 777 ${{ github.workspace }}/output
-
-          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
-          python3 -c "
-          import os
-          template_path = '${{ github.workspace }}/config/config.yaml'
-          output_path = '${{ github.workspace }}/temp_config/config.yaml'
-          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
-          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
-          new_lines = ['show-useless-url: true\n']
-          with open(template_path, 'r', encoding='utf-8') as f:
-              for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  elif 'show-useless-url' in line: continue
-                  else: new_lines.append(line)
-          with open(output_path, 'w', encoding='utf-8') as f:
-              f.writelines(new_lines)
-          "
+      - name: 6.
+        
 
           # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
           (
