@@ -58,18 +58,21 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo-sync
 
-      - name: 4. 开启隧道并提取域名
+      - name: 4. 开启隧道并动态脱敏
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          touch backend.log
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > tunnel.log 2>&1 &
+          # 启动隧道并保持静默
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > /dev/null 2>&1 &
           
-          for i in {1..30}; do
-            API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log tunnel.log 2>/dev/null | head -n 1)
+          echo "等待域名生成..."
+          for i in {1..20}; do
+            API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log 2>/dev/null | head -n 1)
             if [ -n "$API_URL" ]; then
+              # 【核心安全操作】对域名进行脱敏处理，日志中将显示为 ***
+              echo "::add-mask::$API_URL"
               echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-              echo "✅ 隧道建立: $API_URL"
+              echo "✅ 隧道已建立并已加密脱敏"
               break
             fi
             sleep 3
