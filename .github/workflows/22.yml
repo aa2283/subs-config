@@ -107,21 +107,16 @@ jobs:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           set +x
-          # 1. 基础 Git 环境静默配置
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
           git remote set-url origin "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git"
 
-          echo "🚀 启动实时日志监控流..."
-          echo "------------------------------------------------"
-
-          # 2. 开启后台监听进程：实时回显日志并捕捉“保存”信号
+          echo "🚀 Starting Live Log Stream..."
+          
+          # Background monitor
           (
             docker logs -f checker 2>&1 | while read line; do
-              # 实时打印脱敏日志
               echo "$line" | grep -viE "token|secret|key"
-              
-              # 捕获保存成功关键字
               if echo "$line" | grep -q "保存本地成功"; then
                 touch .success_signal
                 break
@@ -129,49 +124,44 @@ jobs:
             done
           ) &
 
-          # 3. 主进程监控：每 10 秒看一眼有没有信号文件
+          # Main loop
           for i in {1..2160}
           do
             if [ -f ".success_signal" ]; then
-              echo -e "\n\n🎯 [系统通知] 检测到数据保存完成，正在丝滑同步仓库..."
+              echo -e "\n🎯 Success detected! Syncing repositories..."
               
               sudo chmod -R 755 output/ 2>/dev/null || true
               COUNT=$(grep -c "name:" output/all.yaml || echo "0")
 
-              # 执行 Git 同步 (全部静默处理，防止日志乱码或泄露)
+              # Silent push to main repo
               cp -f output/all.yaml ./all.yaml
               git add all.yaml
-              git commit -m "Snapshot Sync: $COUNT nodes" >/dev/null 2>&1
+              git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
               git pull --rebase origin main >/dev/null 2>&1
               git push origin main >/dev/null 2>&1
 
+              # Silent push to target repo
               if [ -d "target-repo-sync" ]; then
                 cd target-repo-sync
                 git remote set-url origin "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git"
                 mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml
                 git add .
-                git commit -m "Sync Release: $COUNT" >/dev/null 2>&1
+                git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
                 git pull --rebase origin main >/dev/null 2>&1
                 git push origin main >/dev/null 2>&1
                 cd ..
               fi
 
-              echo "✅ 同步已圆满完成 ($COUNT 节点)。"
-              echo "🛑 停止检测器进程。"
+              echo "✅ Sync complete. Stopping checker."
               docker stop checker >/dev/null 2>&1
 
-              echo "------------------------------------------------"
-              echo "⏰ 隧道已锁定，进入 15 分钟人工操作留存时间..."
+              echo "⏰ Holding tunnel for 15 minutes..."
               for j in {15..1}; do
-                echo "⏳ 存活倒计时: $j 分钟..."
+                echo "⏳ Countdown: $j min remaining..."
                 sleep 60
               done
-              
-              echo "🔔 任务顺利结束。"
               exit 0
             fi
             sleep 10
-          done钟在控制台打个点，防止 GitHub 判定任务超时
-            echo ".[$(date +%H:%M:%S) 监控中...]"
-            sleep 60
+          done
           done
