@@ -1,4 +1,4 @@
-name: Subs-Check & Sub-Store 完美缝合版-1
+name: Subs-Check & Sub-Store 完美缝合版-优化版
 
 on:
   schedule:
@@ -14,53 +14,53 @@ jobs:
 
       - name: Run subscription checker
         run: |
-          # 1. 准备工作 (保持 Python 注入)
+          # 1. 准备目录
           mkdir -p ${{ github.workspace }}/output
           mkdir -p ${{ github.workspace }}/temp_config
-          chmod -R 777 ${{ github.workspace }}/output
+          chmod -R 755 ${{ github.workspace }}/output ${{ github.workspace }}/temp_config
 
+          # 2. 注入订阅 URL 到 config.yaml
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
-          python3 -c "
+          python3 - <<EOF
           import os
           template_path = '${{ github.workspace }}/config/config.yaml'
           output_path = '${{ github.workspace }}/temp_config/config.yaml'
           raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
-          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
+          formatted_urls = [f' - "{u.strip()}"\n' for u in raw_urls if len(u.strip()) > 10]
           new_lines = ['show-useless-url: true\n']
           with open(template_path, 'r', encoding='utf-8') as f:
               for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  elif 'show-useless-url' in line: continue
-                  else: new_lines.append(line)
+                  if '{SUB_URLS}' in line:
+                      new_lines.extend(formatted_urls)
+                  elif 'show-useless-url' in line:
+                      continue
+                  else:
+                      new_lines.append(line)
           with open(output_path, 'w', encoding='utf-8') as f:
               f.writelines(new_lines)
-          "
+          EOF
 
-          # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
+          # 3. 哨兵机制：监控 checker 容器并适时终止
           (
-            echo ">>> [哨兵] 启动成功，正在暗中观察..."
+            echo ">>> [哨兵] 启动成功，正在监控..."
             HUNDRED_TIME=0
             while true; do
               sleep 10
               if ! docker ps | grep -q 'checker'; then break; fi
-              
-              # 抓取并清洗日志
-              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-              
-              # 信号 A：检测到“保存本地成功”或者“节点为空，跳过保存”
+
+              LOGS=$(docker logs --tail 30 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+
               if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
-                echo ">>> [哨兵报告] 检测到程序已输出结束信号（存盘成功或结果为空）！即将强制杀掉进程同步..."
+                echo ">>> [哨兵] 检测到保存完成信号，准备终止..."
                 docker kill checker || true
                 break
               fi
-              
-              # 信号 B：进度 100% 倒计时
+
               if echo "$LOGS" | grep -q "100.0%"; then
                 HUNDRED_TIME=$((HUNDRED_TIME + 10))
-                echo ">>> [哨兵报告] 检测到进度 100%，存盘保底倒计时: ${HUNDRED_TIME}/120 秒"
-                
-                if [ $HUNDRED_TIME -ge 120 ]; then
-                  echo ">>> [哨兵报告] 倒计时结束！执行强制收割..."
+                echo ">>> [哨兵] 进度 100%，保底倒计时: ${HUNDRED_TIME}/180 秒"
+                if [ $HUNDRED_TIME -ge 180 ]; then
+                  echo ">>> [哨兵] 超时强制终止"
                   docker kill checker || true
                   break
                 fi
@@ -68,218 +68,182 @@ jobs:
                 HUNDRED_TIME=0
               fi
             done
-          ) & 
+          ) &
 
-          # 3. 前台运行 (展示进度条)
+          # 4. 运行 checker（前台展示进度）
           docker run --name checker --rm -i \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
-          
-          echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
-          
-          
-      - name: 3. 启动后台服务 (唯一启动点)
+
+          echo ">>> 检测阶段完成，进入 Sub-Store 服务启动。"
+
+      - name: 启动 Sub-Store 后台服务
         run: |
           ROOT_DIR=$(pwd)
-          # 提前准备好配置，防止容器进入初始化模式
           mkdir -p $ROOT_DIR/temp_config $ROOT_DIR/output
           echo "show-useless-url: true" > $ROOT_DIR/temp_config/config.yaml
-          sudo chmod -R 777 $ROOT_DIR/output $ROOT_DIR/temp_config
+          chmod -R 755 $ROOT_DIR/output $ROOT_DIR/temp_config
 
           docker rm -f substore-svc 2>/dev/null || true
-          
-          # 启动后台容器
+
           docker run -d --name substore-svc \
             -p 8299:8299 \
             -v $ROOT_DIR/temp_config:/app/config \
             -v $ROOT_DIR/output:/app/output \
             -v $ROOT_DIR/output:/app/data \
             ghcr.io/aa2283/subs-check:master
-          
-          echo "✅ 容器已在后台运行，8299 端口已开启。"
 
-      - name: 4. 检出私密仓库
-        uses: actions/checkout@v4
-        with:
-          repository: aa2283/v2ray_configs
-          token: ${{ secrets.PAT_TOKEN }}
-          path: target_repo_sync
-          clean: false # 必须为 false，否则会删掉刚看到的 output 文件
-
-      - name: 5. 状态确认 (原启动步骤改为检查)
-        run: |
-          echo "🔍 检查 8299 端口联通性..."
-          # 只要容器还在跑，就不需要报错
-          docker ps -f name=substore-svc
-          curl -I http://127.0.0.1:8299 || echo "⚠️ 等待后端响应中..."
+          echo "✅ Sub-Store 后台服务已启动（端口 8299）"
 
       - name: 激活 Sub-Store 后端
         run: |
-          echo "🌐 正在尝试激活后端服务..."
-          # 1. 模拟浏览器访问首页，触发初始化
-          curl -s https://sub-store.vercel.app?api=http://127.0.0.1:8299 > /dev/null
+          echo "🌐 正在唤醒并激活 Sub-Store 服务..."
+          curl -s "https://sub-store.vercel.app?api=http://127.0.0.1:8299" > /dev/null
+          sleep 8
+          curl -s "http://127.0.0.1:8299/api/utils/version" || echo "版本接口唤醒中..."
           sleep 5
-          
-          # 2. 尝试访问一个具体的 API 路径（即使报错也没关系，主要是为了唤醒）
-          curl -s http://127.0.0.1:8299/api/utils/version || echo "API 唤醒中..."
-          
-          # 3. 再次确认端口是否真的监听了
+
           if netstat -tuln | grep -q ":8299"; then
-            echo "🚀 端口 8299 已完全就绪！"
+            echo "🚀 端口 8299 已就绪！"
           else
-            echo "⚠️ 端口尚未就绪，打印容器实时日志："
-            docker logs substore-svc --tail 20
+            echo "⚠️ 端口未监听，查看容器日志："
+            docker logs substore-svc --tail 30
           fi
 
-      - name: 6. 开启隧道并提取链接 (实时捕获版)
+      - name: 开启 Cloudflared 隧道并提取域名
         run: |
-          # 1. 下载 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
 
-          # 2. 启动隧道并【直接捕获】输出到文件，同时使用 --logfile 强制刷新
-          echo "🚀 启动隧道并申请域名..."
-          ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > tunnel.log 2>&1 &
-          
-          # 3. 循环等待并精准提取
+          echo "🚀 启动 Cloudflared 隧道..."
+          ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile cloudflared.log > tunnel.log 2>&1 &
+
           API_URL=""
-          for i in {1..30}; do
-            # 同时从 backend.log 和 tunnel.log 中查找，确保万无一失
-            API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log tunnel.log 2>/dev/null | head -n 1 | cut -d: -f2- | tr -d ' ')
-            
-            if [ -n "$API_URL" ]; then
-              # 进一步检查是否已经注册成功
-              if grep -qE "Registered|Connected" backend.log tunnel.log 2>/dev/null; then
-                echo "::add-mask::$API_URL"
-                echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-                echo "✅ 隧道建立成功！"
-                echo "🌍 访问地址: $API_URL"
-                break
-              fi
+          for i in {1..40}; do
+            API_URL=$(grep -oE 'https://[a-z0-9-]*\.trycloudflare\.com' tunnel.log cloudflared.log 2>/dev/null | head -n1)
+            if [ -n "$API_URL" ] && grep -q "Registered tunnel connection" cloudflared.log 2>/dev/null; then
+              echo "::add-mask::$API_URL"
+              echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+              echo "✅ 隧道建立成功！访问地址：$API_URL"
+              break
             fi
-            
-            echo "⏳ 正在等待分配域名并建立连接 (第 $i 次)..."
-            sleep 3
+            echo "⏳ 等待隧道注册... ($i/40)"
+            sleep 4
           done
 
           if [ -z "$API_URL" ]; then
-            echo "❌ 提取失败。后台原始日志如下："
-            cat tunnel.log || echo "tunnel.log 为空"
-            cat backend.log || echo "backend.log 为空"
+            echo "❌ 隧道建立失败，日志如下："
+            cat tunnel.log || true
+            cat cloudflared.log || true
             exit 1
           fi
-          
-          # ================== 域名同步模块开始 (建议插入在监听循环之前) ==================
-          
-      - name: 7. 动态域名同步至私有库 (全静默上报)
-        # 这里的环境变量会被 GitHub Actions 自动掩码，但为了双重保险，我们操作时要小心
+
+      - name: 同步隧道域名到私有仓库
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
           REPO: "aa2283/v2ray_configs"
           FILE: "tunnel_url.txt"
         run: |
-          # 使用 set +x 暂时关闭命令回显，防止 curl 命令本身被打印出来
           set +x
-          
-          echo "🔄 正在安全上报动态域名到私有库..."
-          
-          # 1. 获取文件的 SHA (通过管道处理，不打印结果)
+          echo "🔄 正在将隧道域名加密同步到私有仓库..."
+
           SHA=$(curl -s -H "Authorization: token $MY_TOKEN" \
-            "https://api.github.com/repos/$REPO/contents/$FILE" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
-          
-          # 2. Base64 编码域名 (直接从环境变量读取，不 echo)
-          CONTENT=$(echo -n "${{ env.FINAL_API_URL }}" | base64 | tr -d '\n')
-          
-          # 3. 执行 PUT 更新 (关键：将 stdout 和 stderr 全部丢弃，防止报错时泄露 Token)
-          RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+            "https://api.github.com/repos/$REPO/contents/$FILE" | grep '"sha"' | cut -d'"' -f4 || echo "")
+
+          CONTENT=$(echo -n "${{ env.FINAL_API_URL }}" | base64 -w0)
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
             -H "Authorization: token $MY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "{\"message\":\"Update tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
             "https://api.github.com/repos/$REPO/contents/$FILE")
-          
-          if [ "$RESPONSE_CODE" -eq 200 ] || [ "$RESPONSE_CODE" -eq 201 ]; then
-            echo "✅ 域名已加密同步至私有库。"
+
+          if [[ "$HTTP_CODE" == 200 || "$HTTP_CODE" == 201 ]]; then
+            echo "✅ 隧道域名已安全同步到私有仓库"
           else
-            echo "❌ 同步失败，HTTP 状态码: $RESPONSE_CODE"
+            echo "❌ 同步失败，HTTP 状态码: $HTTP_CODE"
             exit 1
           fi
-          
-          # 恢复命令回显（可选）
-          set -x
-      # ================== 域名同步模块结束 ==================
-          
-      - name: 8. 精准监听下载链接并实时推送
+
+      - name: 检出私有仓库（用于后续同步）
+        uses: actions/checkout@v4
+        with:
+          repository: aa2283/v2ray_configs
+          token: ${{ secrets.PAT_TOKEN }}
+          path: target_repo_sync
+
+      - name: 实时监听并推送订阅更新（15轮 × 60秒）
         run: |
-          for i in {1..15}
-          do
-            echo ">>> 第 $i/15 次检查..."
-            
-            # 检查后端，如果连不上，等 60 秒再试，而不是秒跳
-            if ! curl -s --connect-timeout 5 http://127.0.0.1:8299 > /dev/null; then
-              echo "❌ 警告: 无法连接到 8299 端口 (Sub-Store 可能没启动或崩了)"
-              echo "💤 强制保活等待 60 秒..."
+          mkdir -p subs sub-store-data
+
+          for i in {1..15}; do
+            echo ">>> 第 $i/15 次检查（$(date +'%H:%M:%S')）"
+
+            # 检查后端是否存活
+            if ! curl -s --connect-timeout 8 http://127.0.0.1:8299 > /dev/null; then
+              echo "❌ Sub-Store 服务无法连接，等待 60 秒后重试..."
               sleep 60
-              continue 
+              continue
             fi
 
-            # ... 下面是正常的 curl 下载和推送逻辑 ...
-            
-            echo "✅ 本轮检查完成，等待 60 秒..."
-            sleep 60
-          done
-            
-            # 3. 抓取目标格式 (注意：这里使用 rename 接口，因为你是要重命名后的结果)
-            # 如果你的订阅逻辑是在网页端手动点的，保持你的 sub 接口也可以
+            # 下载最新订阅
             curl -s "http://127.0.0.1:8299/download/rename?target=ClashMeta" -o subs/new_clash.yaml
             curl -s "http://127.0.0.1:8299/download/rename?target=URI" -o subs/new_uri.txt
-            
-            # 4. 校验数据有效性
-            if grep -q "proxies" subs/new_clash.yaml || grep -q "://" subs/new_uri.txt; then
-              
-              # 5. 对比是否有变动
-              if [ ! -f "subs/all.yaml" ] || ! cmp -s "subs/new_clash.yaml" "subs/all.yaml" || ! cmp -s "subs/new_uri.txt" "subs/all.txt"; then
-                echo "📢 检测到订阅内容更新，正在同步..."
-                
-                cp subs/new_clash.yaml subs/all.yaml
-                cp subs/new_uri.txt subs/all.txt
-                
-                # 备份数据 (修正后的镜像路径)
-                docker cp substore-svc:/app/data/sub-store.json ./sub-store-data/sub-store.json || echo "备份失败"
-                
-                # 执行 Git 推送 (增加 pull --rebase 解决冲突)
-                git config --local user.email "actions@github.com"
-                git config --local user.name "GitHub Action"
-                git add .
-                git commit -m "自动存档: $(date +'%H:%M:%S')" || echo "无需提交"
-                git pull --rebase origin main
-                git push origin main
-                
-                # 同步到 v2ray_configs 仓库
-                rm -rf target_repo_sync
-                if git clone https://${MY_TOKEN}@github.com/aa2283/v2ray_configs.git target_repo_sync; then
-                  mkdir -p target_repo_sync/subs
-                  cp -f subs/all.yaml target_repo_sync/subs/all.yaml
-                  cp -f subs/all.txt target_repo_sync/subs/all.txt
-                  
-                  cd target_repo_sync
-                  git config --local user.email "actions@github.com"
-                  git config --local user.name "GitHub Action"
-                  git add .
-                  git commit -m "实时更新: $(date +'%H:%M:%S')" || echo "无变动"
-                  git push origin main
-                  cd ..
-                  echo "🚀 v2ray_configs 同步完成！"
-                fi
-              else
-                echo "😴 内容暂无变动。"
-              fi
-            else
-              echo "⚠️ 尚未抓取到有效节点。请确保在 15 分钟内打开隧道域名并在网页端配置好订阅。"
+
+            # 简单有效性校验
+            if ! grep -q "proxies" subs/new_clash.yaml && ! grep -q "://" subs/new_uri.txt; then
+              echo "⚠️ 尚未获取到有效节点，继续等待..."
+              sleep 60
+              continue
             fi
-            
+
+            # 检测是否有更新
+            if [ ! -f "subs/all.yaml" ] || [ ! -f "subs/all.txt" ] || \
+               ! cmp -s "subs/new_clash.yaml" "subs/all.yaml" || \
+               ! cmp -s "subs/new_uri.txt" "subs/all.txt"; then
+
+              echo "📢 检测到订阅更新，正在推送..."
+
+              cp subs/new_clash.yaml subs/all.yaml
+              cp subs/new_uri.txt subs/all.txt
+
+              # 备份 sub-store.json
+              docker cp substore-svc:/app/data/sub-store.json ./sub-store-data/sub-store.json || echo "备份失败"
+
+              # 推送至当前仓库
+              git config user.email "actions@github.com"
+              git config user.name "GitHub Action"
+              git add subs/all.yaml subs/all.txt sub-store-data/sub-store.json
+              git commit -m "自动更新订阅 $(date +'%H:%M:%S')" || echo "无变动"
+              git pull --rebase origin main
+              git push origin main
+
+              # 同步至 v2ray_configs 仓库
+              cp subs/all.yaml target_repo_sync/subs/all.yaml
+              cp subs/all.txt target_repo_sync/subs/all.txt
+
+              cd target_repo_sync
+              git config user.email "actions@github.com"
+              git config user.name "GitHub Action"
+              git add subs/all.yaml subs/all.txt
+              git commit -m "实时更新订阅 $(date +'%H:%M:%S')" || echo "无变动"
+              git push origin main
+              cd ..
+              echo "🚀 已同步到 v2ray_configs 仓库！"
+
+            else
+              echo "😴 本轮无更新"
+            fi
+
+            echo "✅ 本轮检查完成，等待下一轮..."
             sleep 60
           done
 
-          echo "🏁 挂机结束，开始清理环境。"
-          docker rm -f substore-svc || true
+          echo "🏁 所有任务完成，开始清理"
+
+      - name: 清理容器
+        if: always()
+        run: |
+          docker rm -f substore-svc checker || true
+          docker system prune -f
