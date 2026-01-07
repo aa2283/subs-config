@@ -94,10 +94,12 @@ jobs:
 
       - name: 5. sub-store 启动服务 (挂载持久化配置)
         run: |
-          mkdir -p sub-data
+          # 仅映射 8299 端口
+          mkdir -p sub-store-data
           docker run -d --name substore-svc \
-            -p 8299:8299 ghcr.io/aa2283/subs-check:master
-          sleep 15
+            -p 8299:8299 \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master
 
       - name: 6. sub-store 开启隧道并【彻底静默】提取链接
         run: |
@@ -204,7 +206,7 @@ jobs:
                 cp subs/new_uri.txt subs/all.txt
                 
                 # 备份 sub-store.json
-                docker cp substore-svc:/opt/app/data/sub-store.json ./sub-data/sub-store.json
+                docker cp substore-svc:/opt/app/data/sub-store.json ./sub-store-data/sub-store.json
                 
                 # A. 同步到当前 Sub-Store 仓库
                 git config --local user.email "actions@github.com"
