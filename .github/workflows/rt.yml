@@ -89,7 +89,7 @@ jobs:
       - name: 4. sub-store 检出代码
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.MY_PAT }}
+          token: ${{ secrets.PAT_TOKEN }}
           fetch-depth: 0
 
       - name: 5. sub-store 启动服务 (挂载持久化配置)
