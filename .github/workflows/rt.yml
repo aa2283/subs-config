@@ -118,25 +118,16 @@ jobs:
           
           # 4. 循环提取域名 (现在 grep 永远不会报 No such file 错误了)
           API_URL=""
-          for i in {1..30}; do
-            # 检查文件是否已经有内容，避免对空文件执行 grep 的小概率干扰
-            if [ -s "backend.log" ]; then
+          for i in {1..20}; do
+            if grep -q "Connected" backend.log; then
               API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log | tail -n 1)
-              if [ -n "$API_URL" ]; then
-                echo "::add-mask::$API_URL"
-                echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-                echo "✅ 隧道已建立，域名提取成功。"
-                break
-              fi
+              [ -n "$API_URL" ] && break
             fi
-            sleep 2
+            sleep 3
           done
-
-          if [ -z "$API_URL" ]; then 
-            echo "❌ 隧道启动失败，backend.log 内容如下："
-            cat backend.log
-            exit 1 
-          fi
+          
+          if [ -z "$API_URL" ]; then echo "❌ 隧道未连接"; cat backend.log; exit 1; fi
+          echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
           
           # ================== 域名同步模块开始 (建议插入在监听循环之前) ==================
           
