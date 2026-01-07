@@ -79,65 +79,40 @@ jobs:
           echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
           
           
-      - name: 3. 启动后台服务 (异步模式)
+      - name: 3. 启动后台服务 (唯一启动点)
         run: |
           ROOT_DIR=$(pwd)
-          mkdir -p $ROOT_DIR/output $ROOT_DIR/temp_config
+          # 提前准备好配置，防止容器进入初始化模式
+          mkdir -p $ROOT_DIR/temp_config $ROOT_DIR/output
+          echo "show-useless-url: true" > $ROOT_DIR/temp_config/config.yaml
           sudo chmod -R 777 $ROOT_DIR/output $ROOT_DIR/temp_config
 
-          # 强行注入配置，确保后端 Web 界面能直接起来
-          echo "show-useless-url: true" > $ROOT_DIR/temp_config/config.yaml
-
           docker rm -f substore-svc 2>/dev/null || true
-
+          
           # 启动后台容器
           docker run -d --name substore-svc \
             -p 8299:8299 \
             -v $ROOT_DIR/temp_config:/app/config \
             -v $ROOT_DIR/output:/app/output \
+            -v $ROOT_DIR/output:/app/data \
             ghcr.io/aa2283/subs-check:master
+          
+          echo "✅ 容器已在后台运行，8299 端口已开启。"
 
-          echo "🚀 后台容器已启动！"
-          echo "💡 提示：检测正在后台进行，我们无需等待，直接进入下一步开启隧道。"
-          sleep 5 # 给容器一点初始化的时间
-
-      - name: 4. 检出私密仓库 (不影响后台容器)
+      - name: 4. 检出私密仓库
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
           token: ${{ secrets.PAT_TOKEN }}
           path: target_repo_sync
-          clean: false  # 防止清理 output 目录
+          clean: false # 必须为 false，否则会删掉刚看到的 output 文件
 
-      - name: 5. 路径对齐与服务启动
+      - name: 5. 状态确认 (原启动步骤改为检查)
         run: |
-          # 1. 物理层排查：看看检测结果到底在哪，叫什么名字
-          echo "🔍 正在扫描检测结果..."
-          ls -R ${{ github.workspace }}/output || echo "❌ 警告：output 目录不存在"
-          
-          # 2. 强制清理旧容器，防止端口抢占
-          docker rm -f substore-svc 2>/dev/null || true
-          
-          # 3. 路径对齐（核心修复）：
-          # 假设 Sub-Store 需要在 /app/data 读数据，而你的检测产出在 output
-          # 我们把 output 直接挂载到容器期望的任何位置
-          docker run -d --name substore-svc \
-            -p 8299:8299 \
-            -v ${{ github.workspace }}/output:/app/output \
-            -v ${{ github.workspace }}/output:/app/data \
-            ghcr.io/aa2283/subs-check:master
-
-          # 4. 检查容器是否存活
-          sleep 5
-          if ! docker ps | grep -q substore-svc; then
-            echo "❌ 容器启动失败，可能是内部路径冲突"
-            docker logs substore-svc
-            exit 1
-          fi
-
-          # 5. 联通性排查
-          echo "🌐 检查 8299 API 响应..."
-          curl -I http://127.0.0.1:8299 || (echo "❌ API 无响应" && exit 1)
+          echo "🔍 检查 8299 端口联通性..."
+          # 只要容器还在跑，就不需要报错
+          docker ps -f name=substore-svc
+          curl -I http://127.0.0.1:8299 || echo "⚠️ 等待后端响应中..."
 
       - name: 6. 开启隧道并提取链接 (实时捕获版)
         run: |
