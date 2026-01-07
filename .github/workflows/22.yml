@@ -78,45 +78,38 @@ jobs:
             sleep 3
           done
 
-      - name: 5. 动态域名上报 (私有库 txt 更新)
+      - name: 5. 准备目标仓库 (静默模式)
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-          REPO: "aa2283/v2ray_configs"
-          FILE: "tunnel_url.txt"
         run: |
-          # 提取纯净 URL，去除可能混入的文件名前缀
-          CURRENT_URL=$(echo "${{ env.FINAL_API_URL }}" | grep -oE 'https://.*\.trycloudflare\.com')
-          
-          if [ -z "$CURRENT_URL" ]; then echo "域名提取失败" && exit 0; fi
-          
-          echo "🔄 同步域名至 $REPO ..."
-          
-          # 获取文件的 SHA
-          FILE_DATA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/$REPO/contents/$FILE")
-          SHA=$(echo "$FILE_DATA" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
-          
-          CONTENT=$(echo -n "$CURRENT_URL" | base64 | tr -d '\n')
-          
-          curl -s -X PUT -H "Authorization: token $MY_TOKEN" \
-            -d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
-            "https://api.github.com/repos/$REPO/contents/$FILE"
-          echo "✅ 域名上报完成"
+          # 提前预设远程地址，防止后面 push 时日志输出带 Token 的 URL
+          git clone https://x-access-token:${{ secrets.MY_TOKEN }}@github.com/aa2283/v2ray_configs.git target-repo-sync >/dev/null 2>&1
+          cd target-repo-sync
+          git remote set-url origin "https://x-access-token:${{ secrets.MY_TOKEN }}@github.com/aa2283/v2ray_configs.git"
+          echo "✅ 目标仓库已就绪，地址已脱敏"
+          cd ..
 
       - name: 6. 丝滑实时收割与 15 分钟倒计时
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           set +x
+          # 1. 基础配置脱敏
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
           git remote set-url origin "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git"
 
-          echo "🚀 Starting Live Log Stream..."
-          
-          # Background monitor
+          echo "🚀 启动实时检测流 (捕获关键字将自动同步)..."
+          echo "------------------------------------------------"
+
+          # 2. 核心：开启后台实时日志流，同时监控关键字
+          # 使用管道配合 read 实现最丝滑的日志滚动
           (
             docker logs -f checker 2>&1 | while read line; do
+              # 实时打印每一行检测日志
               echo "$line" | grep -viE "token|secret|key"
+              
+              # 一旦发现关键字，立刻发出信号并结束日志流
               if echo "$line" | grep -q "保存本地成功"; then
                 touch .success_signal
                 break
@@ -124,25 +117,24 @@ jobs:
             done
           ) &
 
-          # Main loop
-          for i in {1..2160}
-          do
+          # 3. 主进程：毫秒级轮询信号文件
+          while true; do
             if [ -f ".success_signal" ]; then
-              echo -e "\n🎯 Success detected! Syncing repositories..."
+              echo -e "\n🎯 [系统通知] 捕获成功！正在丝滑同步数据..."
               
               sudo chmod -R 755 output/ 2>/dev/null || true
               COUNT=$(grep -c "name:" output/all.yaml || echo "0")
 
-              # Silent push to main repo
+              # 静默执行 Git 操作，彻底杜绝“尾巴”
               cp -f output/all.yaml ./all.yaml
               git add all.yaml
-              git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
+              git commit -m "Auto Update: $COUNT nodes" >/dev/null 2>&1 || true
               git pull --rebase origin main >/dev/null 2>&1
               git push origin main >/dev/null 2>&1
 
-              # Silent push to target repo
               if [ -d "target-repo-sync" ]; then
                 cd target-repo-sync
+                # 再次确认目标库地址已隐藏
                 git remote set-url origin "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git"
                 mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml
                 git add .
@@ -152,15 +144,28 @@ jobs:
                 cd ..
               fi
 
-              echo "✅ Sync complete. Stopping checker."
+              echo "✅ 同步圆满完成。停止检测器..."
               docker stop checker >/dev/null 2>&1
 
-              echo "⏰ Holding tunnel for 15 minutes..."
+              echo "------------------------------------------------"
+              echo "⏰ 隧道已锁定，您有 15 分钟时间操作网页..."
               for j in {15..1}; do
-                echo "⏳ Countdown: $j min remaining..."
+                echo "⏳ 剩余时间: $j 分钟..."
                 sleep 60
               done
+              
+              echo "🔔 任务顺利结束。"
               exit 0
+            fi
+            
+            # 检查后台进程是否还在（防止意外崩溃）
+            if ! kill -0 $! 2>/dev/null && [ ! -f ".success_signal" ]; then
+              echo "❌ 监控进程异常退出"
+              exit 1
+            fi
+            
+            sleep 2 # 每 2 秒扫描一次信号，响应极快
+          done
             fi
             sleep 10
           done
