@@ -98,3 +98,58 @@ jobs:
             -d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
             "https://api.github.com/repos/$REPO/contents/$FILE"
           echo "✅ 域名上报完成"
+
+      - name: 6. 节点收割与 15 分钟留存模式
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Action"
+          
+          echo "🏹 监控中，等待 9000 节点生成..."
+          
+          # 设定一个 60 次的循环（约 1 小时窗口），只要检测到就推送
+          for i in {1..60}
+          do
+            sudo chmod -R 755 output/ 2>/dev/null || true
+            if [ -f "output/all.yaml" ]; then
+              COUNT=$(grep -c "name:" output/all.yaml || echo "0")
+              
+              if [ "$COUNT" -gt 8500 ]; then
+                echo "🔥 9000 节点已就绪，正在同步仓库..."
+
+                # 同步主库
+                cp -f output/all.yaml ./all.yaml
+                git add all.yaml
+                git commit -m "Auto Update: $COUNT" || echo "无变动"
+                git pull --rebase origin main
+                git push https://x-access-token:${{ secrets.MY_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
+
+                # 同步目标库 (处理域名同步导致的冲突)
+                if [ -d "target-repo-sync" ]; then
+                  cd target-repo-sync
+                  mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml
+                  git add .
+                  git commit -m "Sync: $COUNT" || echo "无变动"
+                  git pull --rebase origin main
+                  git push origin main
+                  cd ..
+                fi
+                
+                echo "✅ 同步圆满完成！"
+                echo "⏱️ 隧道将为你额外保留 15 分钟，请抓紧时间操作网页..."
+                
+                # --- 15 分钟倒计时逻辑 ---
+                for j in {15..1}
+                do
+                  echo "⏳ 距离隧道自动关闭还剩 $j 分钟..."
+                  sleep 60
+                done
+                
+                echo "🔔 时间到，任务正常结束。"
+                exit 0
+              fi
+            fi
+            echo ">>> 第 $i 次巡检，节点还没出炉，等 60 秒..."
+            sleep 60
+          done
