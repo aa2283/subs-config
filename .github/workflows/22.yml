@@ -19,11 +19,10 @@ jobs:
         run: |
           mkdir -p output temp_config sub-store-data
           chmod -R 777 output
-
           echo "output/" >> .gitignore
           echo "*.log" >> .gitignore
           
-          # Python 注入 (保持你原来的代码)
+          # Python 注入逻辑
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
           python3 -c "
           import os
@@ -32,33 +31,34 @@ jobs:
           raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
           formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
           new_lines = ['show-useless-url: true\n']
-          with open(template_path, 'r', encoding='utf-8') as f:
-              for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  elif 'show-useless-url' in line: continue
-                  else: new_lines.append(line)
+          if os.path.exists(template_path):
+              with open(template_path, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
+                      elif 'show-useless-url' in line: continue
+                      else: new_lines.append(line)
           with open(output_path, 'w', encoding='utf-8') as f:
               f.writelines(new_lines)
           "
 
-          # 启动容器：增加内存限制应对 9000 节点
+          # 启动容器：分配 4GB 内存应对 9000 节点
           docker run -d --name checker \
             -e NODE_OPTIONS="--max-old-space-size=4096" \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -p 8299:8299 ghcr.io/aa2283/subs-check:master
 
-          # 实时引流日志，解决“不见检测”
+          # 后台引流日志
           docker logs -f checker &
 
-      - name: 3. 检出目标仓库 (指定路径防止清理)
+      - name: 3. 检出目标仓库 (v2ray_configs)
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo-sync
 
-      - name: 4. 开启隧道并动态提取
+      - name: 4. 开启隧道并提取域名
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
@@ -68,7 +68,6 @@ jobs:
           for i in {1..30}; do
             API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log tunnel.log 2>/dev/null | head -n 1)
             if [ -n "$API_URL" ]; then
-              echo "::add-mask::$API_URL"
               echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
               echo "✅ 隧道建立: $API_URL"
               break
@@ -76,69 +75,14 @@ jobs:
             sleep 3
           done
 
-      - name: 5. 动态域名上报 (保持原样)
+      - name: 5. 动态域名上报 (私有库 txt 更新)
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+          REPO: "aa2283/v2ray_configs"
+          FILE: "tunnel_url.txt"
         run: |
-          # ... (此处放你原本的域名同步 curl API 逻辑) ...
-          echo "域名已上报"
-
-      - name: 6. 精准监听下载并实时推送 (逻辑修复)
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          # 夺回权限，防止 Permission denied
-          sudo chown -R $USER:$GROUP ${{ github.workspace }}/output
-          mkdir -p subs
-          for i in {1..15}
-          do
-            echo ">>> 第 $i/15 次检查 (8299 端口)..."
-            
-            # A. 尝试通过网络接口下载 (Sub-Store 转换)
-            # 注意：对于 9000 节点，增加超时时间
-            curl -s --connect-timeout 20 "http://127.0.0.1:8299/download/sub?target=ClashMeta" -o subs/new_clash.yaml || echo "网络接口超时"
-
-            # B. 物理保底 (如果 API 挂了，直接从磁盘拿测速结果)
-            if [ ! -s "subs/new_clash.yaml" ] && [ -f "output/all.yaml" ]; then
-                echo "⚠️ 启用物理保底同步"
-                cp -f output/all.yaml subs/new_clash.yaml
-            fi
-
-            # C. 变动检查与推送
-            if [ -s "subs/new_clash.yaml" ] && grep -q "proxies" subs/new_clash.yaml; then
-                echo "📢 检测到数据更新，同步中..."
-                
-                # 同步到当前仓库
-                cp -f output/all.yaml ./all.yaml
-                git add all.yaml  # 👈 只添加这一个文件，不要 add 整个目录
-                git commit -m "Auto Update" || echo "无变动"
-                git config --local user.email "actions@github.com"
-                git config --local user.name "GitHub Action"
-                cp -f subs/new_clash.yaml ./all.yaml
-                git add all.yaml
-                git commit -m "Auto Update: $(date +'%H:%M:%S')" || echo ""
-                git push origin main
-
-                # 同步到目标仓库 (target-repo-sync)
-                cp -f subs/new_clash.yaml target-repo-sync/subs/all.yaml
-                cd target-repo-sync
-                git config --local user.email "actions@github.com"
-                git config --local user.name "GitHub Action"
-                git add all.yaml
-                git commit -m "Sync: $(date +'%H:%M:%S')" || echo ""
-                git push origin main
-                cd ..
-                
-                # 备份灵魂文件
-                docker cp checker:/app/output/sub-store.json ./sub-store-data/sub-store.json || true
-                echo "✅ 同步圆满完成"
-            fi
-            
-            sleep 60
-          done
-
-      - name: 7. 善后
-        if: always()
-        run: |
-          docker rm -f checker || true
-          pkill cloudflared || true
+          CURRENT_URL="${{ env.FINAL_API_URL }}"
+          if [ -z "$CURRENT_URL" ]; then echo "域名提取失败" && exit 0; fi
+          
+          echo "🔄 同步域名至 $REPO ..."
+          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/$REPO/contents/$FILE" | grep -o '"sha": "[^"]*' | cut
