@@ -102,14 +102,7 @@ jobs:
             echo ">>> 无内容变动，跳过推送。"
           fi
 		  
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 1. 检出代码
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.PAT_TOKEN }}
-          fetch-depth: 0
+
 
       - name: 2. 启动服务 (挂载持久化配置)
         run: |
