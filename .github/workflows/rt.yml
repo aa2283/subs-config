@@ -1,4 +1,4 @@
-name: Subs-Check 严格流水线版
+name: Subs-Check 线性闭环版
 
 on:
   schedule:
@@ -6,13 +6,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  check-subscriptions:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 2. 准备配置文件 (强力防重跑版)
+      - name: 2. 准备配置 (限制并发 + 强制存盘)
         run: |
           mkdir -p ${{ github.workspace }}/output ${{ github.workspace }}/temp_config ${{ github.workspace }}/rename
           chmod -R 777 ${{ github.workspace }}/output
@@ -23,176 +23,117 @@ jobs:
           output_path = '${{ github.workspace }}/temp_config/config.yaml'
           raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
           formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
-          
-          # 加入所有已知的防重跑参数
           new_lines = [
               'web-panel: true\n', 
               'api-port: 8199\n', 
               'sub-store-port: 8299\n',
-              'concurrent: 120\n',
-              'watch: false\n',        # 关闭文件变动监听（核心）
-              'cron: \"\"\n',            # 清空定时任务
-              'check-on-startup: true\n' # 仅在启动时运行一次
+              'concurrent: 100\n',      # 9000个节点，并发100最稳
+              'watch: false\n'
           ]
           with open(template_path, 'r', encoding='utf-8') as f:
               for line in f:
-                  if any(x in line for x in ['web-panel', 'api-port', 'sub-store-port', 'concurrent', 'watch', 'cron', 'check-on-startup']): continue
+                  if any(x in line for x in ['web-panel', 'api-port', 'sub-store-port', 'concurrent', 'watch']): continue
                   if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
                   else: new_lines.append(line)
           with open(output_path, 'w', encoding='utf-8') as f:
               f.writelines(new_lines)
           "
-      - name: 3. 【第一步】启动 8299 基础环境
+
+      - name: 3. 【核心阶段】8199 全速检测 (测完才跳出)
         run: |
-          echo "🚀 启动后端容器 (8299优先)..."
+          echo "🚀 启动容器并进入检测监控..."
           docker run -d --name checker \
             -p 8199:8199 -p 8299:8299 \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
-
-          echo "⏳ 等待 8299 端口响应..."
-          for i in {1..20}; do
-            if curl -s http://127.0.0.1:8299 > /dev/null; then
-              echo "✅ Sub-Store 已就绪"
-              break
-            fi
-            sleep 2
-          done
-
-      - name: 4. 【第二步】在空闲网络下申请隧道
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          echo "📥 下载并建立分流隧道..."
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-
-          # 分流：域名/ 为 8299，域名/check 为 8199
-          cat <<EOF > tunnel.yml
-          ingress:
-            - hostname: "*"
-              path: /check
-              service: http://localhost:8199
-            - hostname: "*"
-              service: http://localhost:8299
-          EOF
-
-          nohup ./cloudflared tunnel --config tunnel.yml run --url > tunnel.log 2>&1 &
           
-          echo "🔄 捕获域名并上报私有库..."
-          for i in {1..20}; do
-            API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
-            if [ -n "$API_URL" ]; then
-              echo "::add-mask::$API_URL"
-              echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-              SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
-              CONTENT=$(echo -n "$API_URL" | base64 | tr -d '\n')
-              curl -s -X PUT -H "Authorization: token $MY_TOKEN" -H "Content-Type: application/json" \
-                -d "{\"message\":\"Update API\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
-                "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt"
-              echo "✅ 隧道已绑定: $API_URL"
-              break
-            fi
-            sleep 3
-          done
-
-      - name: 5. 【第三步】执行节点检测 (捕获首次完成信号)
-        run: |
-          echo "📢 开始单次检测流程..."
-          # 记录开始时间，防止死循环
-          START_TIME=$SECONDS
-          
+          # 哨兵监控逻辑
           while true; do
-            LOGS=$(docker logs --tail 10 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+            LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
             echo "$LOGS" | grep "进度:" | tail -n 1 || true
             
-            # 【核心改动】一旦看到保存成功，立即通过 API 或 标志位 确认完成，并跳出
-            if echo "$LOGS" | grep -q "保存本地成功"; then
-              echo "========================================================="
-              echo "✅ 检测已首次完成并存盘！"
-              echo "🚫 为防止程序循环重测，现在锁定检测状态。"
-              echo "========================================================="
+            if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
+              echo "✅ 检测圆满结束，文件已落盘。"
               break
             fi
             
-            # 安全退出：如果 40 分钟还没跑完，强制结束
-            if [ $((SECONDS - START_TIME)) -gt 2400 ]; then
-              echo "❌ 检测超时，强制进入后续流程。"
+            # 100% 状态冗余检查
+            if echo "$LOGS" | grep -q "100.0%"; then
+              echo ">>> 检测到 100%，等待存盘信号..."
+              # 再给 30 秒存盘缓冲，然后强制跳出
+              sleep 30
               break
             fi
             sleep 20
           done
 
-      - name: 6. 【第四步】立即重命名并推送 (趁热收割)
+      - name: 4. 【转换阶段】8299 启动并收割结果
         run: |
-          echo "📥 正在收割重命名文件..."
-          # 此时哪怕它想跑第二次，我们也已经拿到了第一次准确的结果
+          echo "📥 检测已结束，现在触发重命名转换..."
+          # 确认 8299 端口活了
+          timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
+          
+          # 下载重命名后的文件
           curl -s "http://127.0.0.1:8299/download/rename?target=URI" -o "${{ github.workspace }}/rename/URI.txt"
           curl -s "http://127.0.0.1:8299/download/rename?target=ClashMeta" -o "${{ github.workspace }}/rename/ClashMeta.yaml"
-          echo "✅ 转换完成。"
+          
+          # 彻底解决权限问题
+          sudo chown -R $USER:$USER ${{ github.workspace }}/output
+          sudo chown -R $USER:$USER ${{ github.workspace }}/rename
+          echo "✅ 结果收割完成。"
 
-      # ... (中间的 Git 推送步骤保持不变) ...
-
-      - name: 9. 【第六步】最后挂机阶段
-        run: |
-          echo "🚀 所有数据已同步至 GitHub。"
-          echo "🌍 调试地址: ${{ env.FINAL_API_URL }}"
-          echo "🕒 现在的访问是安全的，不会触发重新检测。"
-          # 挂机期间不再监控日志，避免你看到它可能在跑第二次
-          for i in {1..15}; do
-            echo ">>> [挂机中] $i/15 min"
-            sleep 60
-          done
-          docker kill checker || true
-
-      - name: 7. 【第五步】推送数据至 GitHub
+      - name: 5. 【推送阶段】将结果同步至 GitHub
         uses: actions/checkout@v4
         with:
           repository: aa2283/v2ray_configs
           token: ${{ secrets.PAT_TOKEN }}
           path: target-repo
 
-      - name: 8. 执行 Git 推送 (修复权限版)
+      - name: 6. 执行 Git 推送
         run: |
-          # 1. 强制修正 output 文件夹权限，确保 Action 用户可以读取
-          sudo chown -R $USER:$USER ${{ github.workspace }}/output
-          sudo chmod -R 755 ${{ github.workspace }}/output
-          
           cd target-repo
           mkdir -p sub rename
-          
-          # 2. 清理旧文件
           rm -rf sub/* rename/*
-          
-          # 3. 拷贝新文件 (增加 -f 强制覆盖，并排除掉报错的 log 文件以防万一)
-          # 我们通常不需要推送日志文件到 GitHub
           cp -rv ../output/* sub/ --exclude=*.log || cp -rv ../output/* sub/
           cp -rv ../rename/* rename/
           
-          # 4. Git 提交
           git config --local user.email "actions@github.com"
           git config --local user.name "Action"
           git add .
-          
-          # 检查是否有文件变动，防止空提交报错
           if [ -n "$(git status --porcelain)" ]; then
             git commit -m "Update Nodes $(date +'%Y-%m-%d %H:%M')"
             git push
-          else
-            echo ">>> 无内容变动，跳过推送。"
           fi
 
-      - name: 9. 【第六步】最后挂机 15 分钟
+      - name: 7. 【挂机阶段】最后申请隧道供手动操作 (15 分钟)
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          echo "========================================================="
-          echo "🎉 所有自动化任务已完成！"
-          echo "🌍 调试地址 (Sub-Store): ${{ env.FINAL_API_URL }}"
-          echo "📊 结果面板 (Checker): ${{ env.FINAL_API_URL }}/check"
-          echo "🕒 容器将保持在线 15 分钟供您手动调试..."
-          echo "========================================================="
+          echo "📥 下载并开启隧道..."
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
+          
+          echo "🔄 正在同步域名到私有库..."
+          for i in {1..20}; do
+            API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | tail -n 1)
+            if [ -n "$API_URL" ]; then
+              echo "::add-mask::$API_URL"
+              SHA=$(curl -s -H "Authorization: token $MY_TOKEN" "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
+              CONTENT=$(echo -n "$API_URL" | base64 | tr -d '\n')
+              curl -s -o /dev/null -X PUT -H "Authorization: token $MY_TOKEN" -H "Content-Type: application/json" \
+                -d "{\"message\":\"Update API\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
+                "https://api.github.com/repos/aa2283/v2ray_configs/contents/tunnel_url.txt"
+              echo "🌍 调试域名: $API_URL"
+              break
+            fi
+            sleep 3
+          done
+
+          echo "🕒 挂机 15 分钟开始..."
           for i in {1..15}; do
-            echo ">>> [挂机中] 第 $i/15 分钟"
+            echo ">>> [常驻运行] $i/15 min"
             sleep 60
           done
           docker kill checker || true
