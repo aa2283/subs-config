@@ -102,70 +102,76 @@ jobs:
             "https://api.github.com/repos/$REPO/contents/$FILE"
           echo "✅ 域名上报完成"
 
-      - name: 6. 实时检测追踪与关键字收割
+      - name: 6. 丝滑实时收割与 15 分钟倒计时
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           set +x
+          # 1. 基础 Git 环境静默配置
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
           git remote set-url origin "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git"
 
-          echo "🚀 启动实时监控流..."
-          
-          # 【核心】在后台开启日志流，实时打印检测过程，但过滤掉敏感词
-          docker logs -f checker 2>&1 | grep --line-buffered -vE "token|key|secret" &
-          LOG_PID=$!
+          echo "🚀 启动实时日志监控流..."
+          echo "------------------------------------------------"
 
-          echo "🏹 正在追踪 [保存本地成功] 关键字以执行收割..."
-
-          # 设定 120 次循环巡检
-          for i in {1..120}
-          do
-            # 检查最新的日志记录
-            IF_SUCCESS=$(docker logs --since 1m checker 2>&1 | grep "保存本地成功" || echo "")
-            
-            if [ -n "$IF_SUCCESS" ]; then
-              echo -e "\n🎯 【目标锁定】检测到保存关键字！开始收割数据..."
+          # 2. 开启后台监听进程：实时回显日志并捕捉“保存”信号
+          (
+            docker logs -f checker 2>&1 | while read line; do
+              # 实时打印脱敏日志
+              echo "$line" | grep -viE "token|secret|key"
               
-              # 停止后台日志流，准备推送
-              kill $LOG_PID 2>/dev/null
+              # 捕获保存成功关键字
+              if echo "$line" | grep -q "保存本地成功"; then
+                touch .success_signal
+                break
+              fi
+            done
+          ) &
 
+          # 3. 主进程监控：每 10 秒看一眼有没有信号文件
+          for i in {1..2160}
+          do
+            if [ -f ".success_signal" ]; then
+              echo -e "\n\n🎯 [系统通知] 检测到数据保存完成，正在丝滑同步仓库..."
+              
               sudo chmod -R 755 output/ 2>/dev/null || true
               COUNT=$(grep -c "name:" output/all.yaml || echo "0")
 
-              # 1. 推送主仓库 (静默模式)
+              # 执行 Git 同步 (全部静默处理，防止日志乱码或泄露)
               cp -f output/all.yaml ./all.yaml
               git add all.yaml
-              git commit -m "Snapshot: $COUNT nodes" >/dev/null 2>&1 || echo "无变动"
+              git commit -m "Snapshot Sync: $COUNT nodes" >/dev/null 2>&1
               git pull --rebase origin main >/dev/null 2>&1
               git push origin main >/dev/null 2>&1
 
-              # 2. 推送目标私有库 (静默模式)
               if [ -d "target-repo-sync" ]; then
                 cd target-repo-sync
                 git remote set-url origin "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git"
                 mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml
                 git add .
-                git commit -m "Sync: $COUNT" >/dev/null 2>&1 || echo "无变动"
+                git commit -m "Sync Release: $COUNT" >/dev/null 2>&1
                 git pull --rebase origin main >/dev/null 2>&1
                 git push origin main >/dev/null 2>&1
                 cd ..
               fi
 
-              echo "✅ 数据同步完成。正在停止容器以锁定文件..."
+              echo "✅ 同步已圆满完成 ($COUNT 节点)。"
+              echo "🛑 停止检测器进程。"
               docker stop checker >/dev/null 2>&1
 
-              echo "⏰ 进入 15 分钟网页操作留存期..."
+              echo "------------------------------------------------"
+              echo "⏰ 隧道已锁定，进入 15 分钟人工操作留存时间..."
               for j in {15..1}; do
-                echo "⏳ 剩余存活时间: $j 分钟..."
+                echo "⏳ 存活倒计时: $j 分钟..."
                 sleep 60
               done
               
+              echo "🔔 任务顺利结束。"
               exit 0
             fi
-            
-            # 每隔一分钟在控制台打个点，防止 GitHub 判定任务超时
+            sleep 10
+          done钟在控制台打个点，防止 GitHub 判定任务超时
             echo ".[$(date +%H:%M:%S) 监控中...]"
             sleep 60
           done
