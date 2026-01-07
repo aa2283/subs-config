@@ -101,39 +101,42 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-      - name: 6. 开启隧道并提取链接 (修复匹配逻辑)
+      - name: 6. 开启隧道并提取链接 (实时捕获版)
         run: |
-          touch backend.log
-          # 启动隧道
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > /dev/null 2>&1 &
+          # 1. 下载 cloudflared
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+
+          # 2. 启动隧道并【直接捕获】输出到文件，同时使用 --logfile 强制刷新
+          echo "🚀 启动隧道并申请域名..."
+          ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > tunnel.log 2>&1 &
           
-          echo "🔄 正在申请私密隧道域名..."
-          
+          # 3. 循环等待并精准提取
           API_URL=""
-          # 增加到 20 次循环，每次 3 秒，总计 1 分钟容错
-          for i in {1..20}; do
-            # 兼容性匹配：只要出现 Registered 或 Connected 任意一个词
-            if grep -qE "Registered tunnel connection|Connected" backend.log; then
-              # 提取域名
-              API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log | tail -n 1)
-              
-              if [ -n "$API_URL" ]; then
+          for i in {1..30}; do
+            # 同时从 backend.log 和 tunnel.log 中查找，确保万无一失
+            API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log tunnel.log 2>/dev/null | head -n 1 | cut -d: -f2- | tr -d ' ')
+            
+            if [ -n "$API_URL" ]; then
+              # 进一步检查是否已经注册成功
+              if grep -qE "Registered|Connected" backend.log tunnel.log 2>/dev/null; then
                 echo "::add-mask::$API_URL"
                 echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-                echo "✅ 隧道已成功注册！域名: $API_URL"
-                # 重要：多等 5 秒让 DNS 生效，防止立即访问报 1033
-                sleep 5
+                echo "✅ 隧道建立成功！"
+                echo "🌍 访问地址: $API_URL"
                 break
               fi
             fi
-            echo "⏳ 正在建立连接 (第 $i 次检查)..."
+            
+            echo "⏳ 正在等待分配域名并建立连接 (第 $i 次)..."
             sleep 3
           done
 
-          if [ -z "$API_URL" ]; then 
-            echo "❌ 隧道连接超时，最后 10 行日志如下："
-            tail -n 10 backend.log
-            exit 1 
+          if [ -z "$API_URL" ]; then
+            echo "❌ 提取失败。后台原始日志如下："
+            cat tunnel.log || echo "tunnel.log 为空"
+            cat backend.log || echo "backend.log 为空"
+            exit 1
           fi
           
           # ================== 域名同步模块开始 (建议插入在监听循环之前) ==================
