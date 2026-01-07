@@ -102,70 +102,70 @@ jobs:
             "https://api.github.com/repos/$REPO/contents/$FILE"
           echo "✅ 域名上报完成"
 
-      - name: 6. 关键字触发收割与 15 分钟留存
+      - name: 6. 实时检测追踪与关键字收割
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # 1. 安全加固：关闭回显，遮蔽访问尾巴
-          set +x 
+          set +x
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
           git remote set-url origin "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git"
 
-          echo "🏹 监控启动：正在追踪日志中的 [保存本地成功] 关键字..."
+          echo "🚀 启动实时监控流..."
+          
+          # 【核心】在后台开启日志流，实时打印检测过程，但过滤掉敏感词
+          docker logs -f checker 2>&1 | grep --line-buffered -vE "token|key|secret" &
+          LOG_PID=$!
 
-          # 设定 120 次巡检（2 小时窗口）
+          echo "🏹 正在追踪 [保存本地成功] 关键字以执行收割..."
+
+          # 设定 120 次循环巡检
           for i in {1..120}
           do
-            # 获取最新日志
-            LOG_TAIL=$(docker logs --tail 20 checker 2>&1)
+            # 检查最新的日志记录
+            IF_SUCCESS=$(docker logs --since 1m checker 2>&1 | grep "保存本地成功" || echo "")
             
-            # 【核心逻辑】检测关键字
-            if echo "$LOG_TAIL" | grep -q "保存本地成功"; then
-              echo "🎯 检测到关键字 [保存本地成功]！正在锁定数据并推送..."
+            if [ -n "$IF_SUCCESS" ]; then
+              echo -e "\n🎯 【目标锁定】检测到保存关键字！开始收割数据..."
               
+              # 停止后台日志流，准备推送
+              kill $LOG_PID 2>/dev/null
+
               sudo chmod -R 755 output/ 2>/dev/null || true
               COUNT=$(grep -c "name:" output/all.yaml || echo "0")
-              
-              # 推送主仓库
+
+              # 1. 推送主仓库 (静默模式)
               cp -f output/all.yaml ./all.yaml
               git add all.yaml
-              git commit -m "Final Save: $COUNT nodes" >/dev/null 2>&1 || echo "数据无变动"
+              git commit -m "Snapshot: $COUNT nodes" >/dev/null 2>&1 || echo "无变动"
               git pull --rebase origin main >/dev/null 2>&1
               git push origin main >/dev/null 2>&1
 
-              # 推送目标仓库
+              # 2. 推送目标私有库 (静默模式)
               if [ -d "target-repo-sync" ]; then
                 cd target-repo-sync
                 git remote set-url origin "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git"
                 mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml
                 git add .
-                git commit -m "Sync: $COUNT" >/dev/null 2>&1 || echo "数据无变动"
+                git commit -m "Sync: $COUNT" >/dev/null 2>&1 || echo "无变动"
                 git pull --rebase origin main >/dev/null 2>&1
                 git push origin main >/dev/null 2>&1
                 cd ..
               fi
 
-              echo "✅ 数据同步圆满完成！"
-              echo "🛑 正在停止循环检测进程..."
-              # 杀掉容器，防止它继续循环写入覆盖掉我们刚才保存的文件
+              echo "✅ 数据同步完成。正在停止容器以锁定文件..."
               docker stop checker >/dev/null 2>&1
 
-              echo "⏰ 现在进入 15 分钟留存模式，请抓紧时间操作网页..."
+              echo "⏰ 进入 15 分钟网页操作留存期..."
               for j in {15..1}; do
-                echo "⏳ 存活倒计时: $j 分钟..."
+                echo "⏳ 剩余存活时间: $j 分钟..."
                 sleep 60
               done
               
-              echo "🔔 任务正常结束。"
               exit 0
             fi
-
-            # 如果没发现关键字，打印一行状态继续等
-            CURRENT_COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
-            echo ">>> [第 $i 分钟] 尚未发现保存关键字，当前文件节点数: $CURRENT_COUNT"
+            
+            # 每隔一分钟在控制台打个点，防止 GitHub 判定任务超时
+            echo ".[$(date +%H:%M:%S) 监控中...]"
             sleep 60
           done
-
-          echo "❌ 超过 2 小时未检测到保存本地成功关键字，任务超时。"
-          exit 1
