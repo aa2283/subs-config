@@ -12,7 +12,7 @@ jobs:
       - name: 1. 环境初始化
         uses: actions/checkout@v4
         with:
-          clean: false # 禁止清理，保护全过程文件
+          clean: false
 
       - name: 2. 准备配置并后台启动检测
         run: |
@@ -39,79 +39,85 @@ jobs:
               f.writelines(new_lines)
           "
 
-          # C. 【关键】后台启动容器 (不卡住流程)
-          # 使用 -d 模式，并增加内存限制以应对 9000 节点
+          # C. 后台启动容器 (使用 -d)
           docker run -d --name checker \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -v ${{ github.workspace }}/output:/app/data \
             -p 8299:8299 ghcr.io/aa2283/subs-check:master
 
-          # D. 【哨兵逻辑】只观察，不杀容器 (杀容器交给最后的善后)
+          echo "🚀 容器已后台启动，开始实时输出检测进度："
+          # 实时引流日志到控制台，解决“不见检测”的问题
+          docker logs -f checker & 
+
+          # D. 哨兵逻辑：监听保存成功信号
           (
-            echo ">>> [哨兵] 启动成功，正在观察日志..."
+            echo ">>> [哨兵] 正在观察进度..."
             while true; do
               sleep 15
               if ! docker ps | grep -q 'checker'; then break; fi
               LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-              
               if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
-                echo ">>> [哨兵报告] 检测到保存成功！服务已就绪。"
-                # 这里不再执行 docker kill，让 8299 端口继续为后续步骤服务
+                echo "✅ [哨兵报告] 存盘信号已确认。"
                 break
               fi
             done
-          ) & 
+          ) &
 
-      - name: 3. 检出私密仓库
-        uses: actions/checkout@v4
-        with:
-          repository: aa2283/v2ray_configs
-          token: ${{ secrets.PAT_TOKEN }}
-          path: target-repo
-          clean: false
-
-      - name: 4. 开启隧道并同步域名
+      - name: 3. 开启隧道并动态提取域名
         run: |
+          # 1. 下载 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
+
+          # 2. 先创建日志文件，防止 grep 报错 (解决 No such file 报错)
+          touch backend.log
+
+          # 3. 启动隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > /dev/null 2>&1 &
           
-          echo "🔄 正在申请私密隧道域名..."
+          echo "🔄 正在提取隧道域名..."
+          API_URL=""
+          # 循环 20 次等待域名分配
           for i in {1..20}; do
-            API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log | tail -n 1)
-            if [ -n "$API_URL" ]; then
-              echo "::add-mask::$API_URL"
-              echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-              break
+            # 只有当文件里有域名时才提取
+            if grep -q 'https://' backend.log 2>/dev/null; then
+               API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log | tail -n 1)
+               if [ -n "$API_URL" ]; then
+                 echo "::add-mask::$API_URL"
+                 echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+                 echo "✅ 成功提取域名: $API_URL"
+                 break
+               fi
             fi
-            sleep 2
+            sleep 3
           done
 
-      - name: 5. 域名同步至私密库
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          # (此处保持你原本的 API PUT 更新逻辑即可)
-          echo "✅ 隧道域名已同步至私密库。"
+          if [ -z "$API_URL" ]; then 
+            echo "❌ 提取失败，backend.log 内容如下："
+            cat backend.log
+            exit 1
+          fi
 
-      - name: 6. 精准监听下载并实时推送
+      - name: 4. 检出私密仓库并执行精准下载同步
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          # 检出目标仓库到 target-repo 目录
+          rm -rf target-repo
+          git clone https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git target-repo
+          
           mkdir -p subs
           for i in {1..15}
           do
-            echo ">>> 第 $i/15 次检查更新..."
+            echo ">>> 第 $i/15 次检查更新 (8299 端口)..."
             
-            # 尝试通过 8299 端口下载 (你的核心逻辑)
-            # 增加 --connect-timeout 防止卡死
+            # 使用你的 curl 下载逻辑
             if curl -s --connect-timeout 10 "http://127.0.0.1:8299/download/sub?target=ClashMeta" -o subs/new_clash.yaml; then
-              
-              # 校验数据并执行 git 推送
               if grep -q "proxies" subs/new_clash.yaml; then
-                echo "📢 检测到内容，准备推送..."
-                # 复制到你的 target-repo 路径
+                echo "📢 抓取成功，正在推送到 v2ray_configs..."
+                
+                mkdir -p target-repo/sub
                 cp -f subs/new_clash.yaml target-repo/sub/all.yaml
                 
                 cd target-repo
@@ -121,14 +127,13 @@ jobs:
                 git commit -m "自动更新: $(date +'%H:%M:%S')" || echo "无变动"
                 git push
                 cd ..
+                echo "🚀 同步完成！"
               fi
-            else
-              echo "⏳ 8299 端口响应中，请稍后..."
             fi
             sleep 60
           done
 
-      - name: 7. 善后清理
+      - name: 5. 善后清理
         if: always()
         run: |
           docker rm -f checker || true
