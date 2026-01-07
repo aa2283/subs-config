@@ -102,57 +102,75 @@ jobs:
             "https://api.github.com/repos/$REPO/contents/$FILE"
           echo "✅ 域名上报完成"
 
-      - name: 6. 节点收割模式 (带实时日志)
+      - name: 6. 节点精准收割 (动态达标 + 实时日志)
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # 隐藏执行过程，防止 Token 泄露
           set +x 
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
           
-          echo "🏹 监控中... 正在捕获后台检测进度..."
+          # 预设 Git 远程地址，防止泄露访问尾巴
+          git remote set-url origin "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git"
+
+          echo "🏹 监控启动：检测到去重节点约 4600+，将动态捕获结果..."
           
+          LAST_COUNT=0
+          SAME_COUNT_TIMES=0
+
           for i in {1..120}
           do
-            # 显示最新的 5 行 Docker 日志，让你看到检测动态，但过滤掉可能的敏感词
             echo "--- 容器实时状态 (第 $i 分钟) ---"
-            docker logs --tail 5 checker 2>&1 | grep -viE "token|key|secret|password" || echo "等待日志输出..."
+            # 【优化】增加日志捕获范围，显示最近 10 行，过滤掉无用信息
+            docker logs --tail 10 checker 2>&1 | grep -viE "token|secret" || echo "等待日志..."
             
             sudo chmod -R 755 output/ 2>/dev/null || true
             if [ -f "output/all.yaml" ]; then
+              # 统计当前 all.yaml 里的节点数
               COUNT=$(grep -c "name:" output/all.yaml || echo "0")
-              echo "📊 当前本地节点总数: $COUNT / 目标 8500+"
+              echo "📊 当前文件节点数: $COUNT"
 
-              if [ "$COUNT" -gt 8500 ]; then
-                echo "🔥 达到目标，正在静默执行同步..."
-                
-                # 同步操作 (不打印详细过程)
+              # 【智能判断逻辑】
+              # 1. 如果达到 4000 个（接近去重后的总量）
+              # 2. 或者节点数连续 3 分钟没有变化且大于 0（说明测速已结束）
+              if [ "$COUNT" -gt 4000 ] || ([ "$COUNT" -eq "$LAST_COUNT" ] && [ "$COUNT" -gt 0 ] && [ "$SAME_COUNT_TIMES" -ge 3 ]); then
+                echo "✅ 检测已完成或达到稳定状态 ($COUNT 个节点)，开始执行同步..."
+
+                # 静默推送主仓库
                 cp -f output/all.yaml ./all.yaml
                 git add all.yaml
-                git commit -m "Auto Update: $COUNT" >/dev/null 2>&1 || echo "无变动"
+                git commit -m "Auto Update: $COUNT" >/dev/null 2>&1 || echo "数据无变动"
                 git pull --rebase origin main >/dev/null 2>&1
-                # 使用变量而不回显，防止 Token 暴露
-                git push https://x-access-token:${{ secrets.MY_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main >/dev/null 2>&1
+                git push origin main >/dev/null 2>&1
 
+                # 静默推送目标仓库
                 if [ -d "target-repo-sync" ]; then
                   cd target-repo-sync
+                  git remote set-url origin "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git"
                   mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml
                   git add .
-                  git commit -m "Sync: $COUNT" >/dev/null 2>&1 || echo "无变动"
+                  git commit -m "Sync Nodes: $COUNT" >/dev/null 2>&1 || echo "数据无变动"
                   git pull --rebase origin main >/dev/null 2>&1
                   git push origin main >/dev/null 2>&1
                   cd ..
                 fi
                 
-                echo "✅ 同步圆满完成！"
-                echo "⏰ 进入 15 分钟留存模式，倒计时开始..."
+                echo "🚀 同步圆满完成！"
+                echo "⏰ 进入 15 分钟倒计时留存模式..."
                 for j in {15..1}; do
-                  echo "⏳ 剩余时间: $j 分钟..."
+                  echo "⏳ 存活倒计时: $j 分钟..."
                   sleep 60
                 done
                 exit 0
               fi
+
+              # 记录上一次的节点数用于对比
+              if [ "$COUNT" -eq "$LAST_COUNT" ]; then
+                SAME_COUNT_TIMES=$((SAME_COUNT_TIMES + 1))
+              else
+                SAME_COUNT_TIMES=0
+              fi
+              LAST_COUNT=$COUNT
             fi
             sleep 60
           done
