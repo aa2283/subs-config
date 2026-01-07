@@ -97,7 +97,7 @@ jobs:
           mkdir -p sub-store-data
           docker run -d --name substore-svc \
             -v $(pwd)/sub-store-data:/opt/app/data \
-            -p 3000:3000 -p 3001:3001 xream/sub-store
+            -p 8299:8299
           sleep 15
 
       - name: 6. sub-store 开启隧道并【彻底静默】提取链接
