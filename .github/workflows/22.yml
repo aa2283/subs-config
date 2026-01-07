@@ -1,260 +1,260 @@
-name: Subscription Checker 测试测试测试
+	name:Subscription Checker 测试
 
-on:
-  schedule:
-    - cron: '15 4 * * *'
-  workflow_dispatch:
+    on
+	  schedule:
+		- cron: '15 4 * * *'
+	  workflow_dispatch:
 
-jobs:
-  check-subscriptions:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+	jobs:
+	  check-subscriptions:
+		runs-on: ubuntu-latest
+		steps:
+		  - name: Checkout repository
+			uses: actions/checkout@v4
 
-      - name: Run subscription checker
-        run: |
-          # 1. 准备工作 (保持 Python 注入)
-          mkdir -p ${{ github.workspace }}/output
-          mkdir -p ${{ github.workspace }}/temp_config
-          chmod -R 777 ${{ github.workspace }}/output
+		  - name: Run subscription checker
+			run: |
+			  # 1. 准备工作 (保持 Python 注入)
+			  mkdir -p ${{ github.workspace }}/output
+			  mkdir -p ${{ github.workspace }}/temp_config
+			  chmod -R 777 ${{ github.workspace }}/output
 
-          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
-          python3 -c "
-          import os
-          template_path = '${{ github.workspace }}/config/config.yaml'
-          output_path = '${{ github.workspace }}/temp_config/config.yaml'
-          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
-          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
-          new_lines = ['show-useless-url: true\n']
-          with open(template_path, 'r', encoding='utf-8') as f:
-              for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  elif 'show-useless-url' in line: continue
-                  else: new_lines.append(line)
-          with open(output_path, 'w', encoding='utf-8') as f:
-              f.writelines(new_lines)
-          "
+			  export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+			  python3 -c "
+			  import os
+			  template_path = '${{ github.workspace }}/config/config.yaml'
+			  output_path = '${{ github.workspace }}/temp_config/config.yaml'
+			  raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
+			  formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
+			  new_lines = ['show-useless-url: true\n']
+			  with open(template_path, 'r', encoding='utf-8') as f:
+				  for line in f:
+					  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
+					  elif 'show-useless-url' in line: continue
+					  else: new_lines.append(line)
+			  with open(output_path, 'w', encoding='utf-8') as f:
+				  f.writelines(new_lines)
+			  "
 
-          # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
-          (
-            echo ">>> [哨兵] 启动成功，正在暗中观察..."
-            HUNDRED_TIME=0
-            while true; do
-              sleep 10
-              if ! docker ps | grep -q 'checker'; then break; fi
-              
-              # 抓取并清洗日志
-              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-              
-              # 信号 A：检测到“保存本地成功”或者“节点为空，跳过保存”
-              if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
-                echo ">>> [哨兵报告] 检测到程序已输出结束信号（存盘成功或结果为空）！即将强制杀掉进程同步..."
-                docker kill checker || true
-                break
-              fi
-              
-              # 信号 B：进度 100% 倒计时
-              if echo "$LOGS" | grep -q "100.0%"; then
-                HUNDRED_TIME=$((HUNDRED_TIME + 10))
-                echo ">>> [哨兵报告] 检测到进度 100%，存盘保底倒计时: ${HUNDRED_TIME}/120 秒"
-                
-                if [ $HUNDRED_TIME -ge 120 ]; then
-                  echo ">>> [哨兵报告] 倒计时结束！执行强制收割..."
-                  docker kill checker || true
-                  break
-                fi
-              else
-                HUNDRED_TIME=0
-              fi
-            done
-          ) & 
+			  # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
+			  (
+				echo ">>> [哨兵] 启动成功，正在暗中观察..."
+				HUNDRED_TIME=0
+				while true; do
+				  sleep 10
+				  if ! docker ps | grep -q 'checker'; then break; fi
+				  
+				  # 抓取并清洗日志
+				  LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+				  
+				  # 信号 A：检测到“保存本地成功”或者“节点为空，跳过保存”
+				  if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
+					echo ">>> [哨兵报告] 检测到程序已输出结束信号（存盘成功或结果为空）！即将强制杀掉进程同步..."
+					docker kill checker || true
+					break
+				  fi
+				  
+				  # 信号 B：进度 100% 倒计时
+				  if echo "$LOGS" | grep -q "100.0%"; then
+					HUNDRED_TIME=$((HUNDRED_TIME + 10))
+					echo ">>> [哨兵报告] 检测到进度 100%，存盘保底倒计时: ${HUNDRED_TIME}/120 秒"
+					
+					if [ $HUNDRED_TIME -ge 120 ]; then
+					  echo ">>> [哨兵报告] 倒计时结束！执行强制收割..."
+					  docker kill checker || true
+					  break
+					fi
+				  else
+					HUNDRED_TIME=0
+				  fi
+				done
+			  ) & 
 
-          # 3. 前台运行 (展示进度条)
-          docker run --name checker --rm -i \
-            -v ${{ github.workspace }}/temp_config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
-          
-          echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
-          
-          
-      - name: Checkout target repository
-        uses: actions/checkout@v4
-        with:
-          repository: aa2283/v2ray_configs
-          token: ${{ secrets.PAT_TOKEN }}
-          path: target-repo
+			  # 3. 前台运行 (展示进度条)
+			  docker run --name checker --rm -i \
+				-v ${{ github.workspace }}/temp_config:/app/config \
+				-v ${{ github.workspace }}/output:/app/output \
+				ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
+			  
+			  echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
+			  
+			  
+		  - name: Checkout target repository
+			uses: actions/checkout@v4
+			with:
+			  repository: aa2283/v2ray_configs
+			  token: ${{ secrets.PAT_TOKEN }}
+			  path: target-repo
 
-      - name: Copy and commit changes
-        run: |
-          cd target-repo
-          mkdir -p sub
-          rm -f sub/* || true
-          cp -rv ../output/. sub/
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add sub/
-          if [ -n "$(git status --porcelain)" ]; then
-            git commit -m "自动更新: $(date +'%Y-%m-%d %H:%M')"
-            git push
-          else
-            echo ">>> 无内容变动，跳过推送。"
-          fi
-		  
-		
-        build:
-        runs-on: ubuntu-latest
-        steps:
-      - name: 1. 检出代码
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.PAT_TOKEN }}
-          fetch-depth: 0
+		  - name: Copy and commit changes
+			run: |
+			  cd target-repo
+			  mkdir -p sub
+			  rm -f sub/* || true
+			  cp -rv ../output/. sub/
+			  git config --local user.email "github-actions[bot]@users.noreply.github.com"
+			  git config --local user.name "github-actions[bot]"
+			  git add sub/
+			  if [ -n "$(git status --porcelain)" ]; then
+				git commit -m "自动更新: $(date +'%Y-%m-%d %H:%M')"
+				git push
+			  else
+				echo ">>> 无内容变动，跳过推送。"
+			  fi
+			  
+			
+		   build:
+			runs-on: ubuntu-latest
+			steps:
+		  - name: 1. 检出代码
+			uses: actions/checkout@v4
+			with:
+			  token: ${{ secrets.PAT_TOKEN }}
+			  fetch-depth: 0
 
-      - name: 2. 启动服务 (挂载持久化配置)
-        run: |
-            -v ${{ github.workspace }}/temp_config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master 
-          sleep 15
+		  - name: 2. 启动服务 (挂载持久化配置)
+			run: |
+				-v ${{ github.workspace }}/temp_config:/app/config \
+				-v ${{ github.workspace }}/output:/app/output \
+				ghcr.io/aa2283/subs-check:master 
+			  sleep 15
 
-      - name: 3. 开启隧道并【彻底静默】提取链接
-        run: |
-          # 1. 下载 cloudflared
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
+		  - name: 3. 开启隧道并【彻底静默】提取链接
+			run: |
+			  # 1. 下载 cloudflared
+			  curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+			  chmod +x cloudflared
 
-          # 2. 启动隧道：将所有输出 (stdout & stderr) 全部重定向到 backend.log
-          # 使用 > backend.log 2>&1 确保控制台没有任何 cloudflared 的原始输出
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > /dev/null 2>&1 &
-          
-          echo "🔄 正在申请私密隧道域名..."
-          
-          # 3. 循环提取域名
-          API_URL=""
-          for i in {1..20}; do
-            # 从本地日志文件中精准抓取
-            API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log | tail -n 1)
-            if [ -n "$API_URL" ]; then
-              # ✨ 第一时间打码，后续任何步骤 echo 都会变成 ***
-              echo "::add-mask::$API_URL"
-              break
-            fi
-            sleep 2
-          done
+			  # 2. 启动隧道：将所有输出 (stdout & stderr) 全部重定向到 backend.log
+			  # 使用 > backend.log 2>&1 确保控制台没有任何 cloudflared 的原始输出
+			  nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > /dev/null 2>&1 &
+			  
+			  echo "🔄 正在申请私密隧道域名..."
+			  
+			  # 3. 循环提取域名
+			  API_URL=""
+			  for i in {1..20}; do
+				# 从本地日志文件中精准抓取
+				API_URL=$(grep -o 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log | tail -n 1)
+				if [ -n "$API_URL" ]; then
+				  # ✨ 第一时间打码，后续任何步骤 echo 都会变成 ***
+				  echo "::add-mask::$API_URL"
+				  break
+				fi
+				sleep 2
+			  done
 
-          if [ -z "$API_URL" ]; then 
-            echo "❌ 隧道启动失败，请检查 backend.log"
-            exit 1 
-          fi
-          
-          # 4. 存入环境变量
-          echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
-          
-          # 5. 打印一条安全的确认信息
-          echo "✅ 隧道已建立，域名已在日志中自动脱敏。"
-          
-          # ================== 域名同步模块开始 (建议插入在监听循环之前) ==================
-          
-      - name: 5. 动态域名同步至私有库 (全静默上报)
-        # 这里的环境变量会被 GitHub Actions 自动掩码，但为了双重保险，我们操作时要小心
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-          REPO: "aa2283/v2ray_configs"
-          FILE: "tunnel_url.txt"
-        run: |
-          # 使用 set +x 暂时关闭命令回显，防止 curl 命令本身被打印出来
-          set +x
-          
-          echo "🔄 正在安全上报动态域名到私有库..."
-          
-          # 1. 获取文件的 SHA (通过管道处理，不打印结果)
-          SHA=$(curl -s -H "Authorization: token $MY_TOKEN" \
-            "https://api.github.com/repos/$REPO/contents/$FILE" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
-          
-          # 2. Base64 编码域名 (直接从环境变量读取，不 echo)
-          CONTENT=$(echo -n "${{ env.FINAL_API_URL }}" | base64 | tr -d '\n')
-          
-          # 3. 执行 PUT 更新 (关键：将 stdout 和 stderr 全部丢弃，防止报错时泄露 Token)
-          RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-            -H "Authorization: token $MY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
-            "https://api.github.com/repos/$REPO/contents/$FILE")
-          
-          if [ "$RESPONSE_CODE" -eq 200 ] || [ "$RESPONSE_CODE" -eq 201 ]; then
-            echo "✅ 域名已加密同步至私有库。"
-          else
-            echo "❌ 同步失败，HTTP 状态码: $RESPONSE_CODE"
-            exit 1
-          fi
-          
-          # 恢复命令回显（可选）
-          set -x
-      # ================== 域名同步模块结束 ==================
-          
-      - name: 4. 精准监听下载链接并实时推送
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          for i in {1..15}
-          do
-            echo ">>> 第 $i 次检查 (监听 sub 订阅)..."
-            
-            # 1. 强制激活后端 API 状态
-            timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
-            curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
-            sleep 2
-            
-            # 2. 抓取两个目标格式到临时文件
-            # 如果你的订阅名不叫 sub，请把下面 URL 里的 sub 改掉
-            curl -s "http://127.0.0.1:8299/download/sub?target=ClashMeta" -o subs/new_clash.yaml
-            curl -s "http://127.0.0.1:8299/download/sub?target=URI" -o subs/new_uri.txt
-            
-            # 3. 校验数据有效性 (防止抓到报错网页)
-            if grep -q "proxies" subs/new_clash.yaml || grep -q "://" subs/new_uri.txt; then
-              
-              # 4. 对比是否有变动 (只要其中一个变了就推送)
-              if [ ! -f "subs/all.yaml" ] || ! cmp -s "subs/new_clash.yaml" "subs/all.yaml" || ! cmp -s "subs/new_uri.txt" "subs/all.txt"; then
-                echo "📢 检测到订阅内容更新，正在执行同步..."
-                
-                cp subs/new_clash.yaml subs/all.yaml
-                cp subs/new_uri.txt subs/all.txt
-                
-                # 备份 sub-store.json
-                docker cp substore-svc:/opt/app/data/sub-store.json ./sub-store-data/sub-store.json
-                
-                # A. 同步到当前 Sub-Store 仓库
-                git config --local user.email "actions@github.com"
-                git config --local user.name "GitHub Action"
-                git add .
-                git commit -m "自动存档: $(date +'%H:%M:%S')" || echo ""
-                git push origin main
-                
-                # B. 同步到 v2ray_configs 仓库
-                rm -rf target_repo
-                if git clone https://${MY_TOKEN}@github.com/aa2283/v2ray_configs.git target_repo; then
-                  mkdir -p target_repo/subs
-                  cp -f subs/all.yaml target_repo/subs/all.yaml
-                  cp -f subs/all.txt target_repo/subs/all.txt
-                  
-                  cd target_repo
-                  git config --local user.email "actions@github.com"
-                  git config --local user.name "GitHub Action"
-                  git add .
-                  git commit -m "实时更新: $(date +'%H:%M:%S')" || echo ""
-                  git push origin main
-                  cd ..
-                  echo "🚀 v2ray_configs 同步完成！"
-                fi
-              else
-                echo "😴 内容暂无变动。"
-              fi
-            else
-              echo "⚠️ 尚未抓取到有效节点，请确保网页端订阅名正确且已点击[保存]。"
-            fi
-            
-            sleep 60
-          done
-          fi  
+			  if [ -z "$API_URL" ]; then 
+				echo "❌ 隧道启动失败，请检查 backend.log"
+				exit 1 
+			  fi
+			  
+			  # 4. 存入环境变量
+			  echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+			  
+			  # 5. 打印一条安全的确认信息
+			  echo "✅ 隧道已建立，域名已在日志中自动脱敏。"
+			  
+			  # ================== 域名同步模块开始 (建议插入在监听循环之前) ==================
+			  
+		  - name: 5. 动态域名同步至私有库 (全静默上报)
+			# 这里的环境变量会被 GitHub Actions 自动掩码，但为了双重保险，我们操作时要小心
+			env:
+			  MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+			  REPO: "aa2283/v2ray_configs"
+			  FILE: "tunnel_url.txt"
+			run: |
+			  # 使用 set +x 暂时关闭命令回显，防止 curl 命令本身被打印出来
+			  set +x
+			  
+			  echo "🔄 正在安全上报动态域名到私有库..."
+			  
+			  # 1. 获取文件的 SHA (通过管道处理，不打印结果)
+			  SHA=$(curl -s -H "Authorization: token $MY_TOKEN" \
+				"https://api.github.com/repos/$REPO/contents/$FILE" | grep -o '"sha": "[^"]*' | cut -d'"' -f4 || echo "")
+			  
+			  # 2. Base64 编码域名 (直接从环境变量读取，不 echo)
+			  CONTENT=$(echo -n "${{ env.FINAL_API_URL }}" | base64 | tr -d '\n')
+			  
+			  # 3. 执行 PUT 更新 (关键：将 stdout 和 stderr 全部丢弃，防止报错时泄露 Token)
+			  RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+				-H "Authorization: token $MY_TOKEN" \
+				-H "Content-Type: application/json" \
+				-d "{\"message\":\"Update Tunnel URL\",\"content\":\"$CONTENT\",\"sha\":\"$SHA\"}" \
+				"https://api.github.com/repos/$REPO/contents/$FILE")
+			  
+			  if [ "$RESPONSE_CODE" -eq 200 ] || [ "$RESPONSE_CODE" -eq 201 ]; then
+				echo "✅ 域名已加密同步至私有库。"
+			  else
+				echo "❌ 同步失败，HTTP 状态码: $RESPONSE_CODE"
+				exit 1
+			  fi
+			  
+			  # 恢复命令回显（可选）
+			  set -x
+		  # ================== 域名同步模块结束 ==================
+			  
+		  - name: 4. 精准监听下载链接并实时推送
+			env:
+			  MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+			run: |
+			  for i in {1..15}
+			  do
+				echo ">>> 第 $i 次检查 (监听 sub 订阅)..."
+				
+				# 1. 强制激活后端 API 状态
+				timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
+				curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
+				sleep 2
+				
+				# 2. 抓取两个目标格式到临时文件
+				# 如果你的订阅名不叫 sub，请把下面 URL 里的 sub 改掉
+				curl -s "http://127.0.0.1:8299/download/sub?target=ClashMeta" -o subs/new_clash.yaml
+				curl -s "http://127.0.0.1:8299/download/sub?target=URI" -o subs/new_uri.txt
+				
+				# 3. 校验数据有效性 (防止抓到报错网页)
+				if grep -q "proxies" subs/new_clash.yaml || grep -q "://" subs/new_uri.txt; then
+				  
+				  # 4. 对比是否有变动 (只要其中一个变了就推送)
+				  if [ ! -f "subs/all.yaml" ] || ! cmp -s "subs/new_clash.yaml" "subs/all.yaml" || ! cmp -s "subs/new_uri.txt" "subs/all.txt"; then
+					echo "📢 检测到订阅内容更新，正在执行同步..."
+					
+					cp subs/new_clash.yaml subs/all.yaml
+					cp subs/new_uri.txt subs/all.txt
+					
+					# 备份 sub-store.json
+					docker cp substore-svc:/opt/app/data/sub-store.json ./sub-store-data/sub-store.json
+					
+					# A. 同步到当前 Sub-Store 仓库
+					git config --local user.email "actions@github.com"
+					git config --local user.name "GitHub Action"
+					git add .
+					git commit -m "自动存档: $(date +'%H:%M:%S')" || echo ""
+					git push origin main
+					
+					# B. 同步到 v2ray_configs 仓库
+					rm -rf target_repo
+					if git clone https://${MY_TOKEN}@github.com/aa2283/v2ray_configs.git target_repo; then
+					  mkdir -p target_repo/subs
+					  cp -f subs/all.yaml target_repo/subs/all.yaml
+					  cp -f subs/all.txt target_repo/subs/all.txt
+					  
+					  cd target_repo
+					  git config --local user.email "actions@github.com"
+					  git config --local user.name "GitHub Action"
+					  git add .
+					  git commit -m "实时更新: $(date +'%H:%M:%S')" || echo ""
+					  git push origin main
+					  cd ..
+					  echo "🚀 v2ray_configs 同步完成！"
+					fi
+				  else
+					echo "😴 内容暂无变动。"
+				  fi
+				else
+				  echo "⚠️ 尚未抓取到有效节点，请确保网页端订阅名正确且已点击[保存]。"
+				fi
+				
+				sleep 60
+			  done
+			  fi  
