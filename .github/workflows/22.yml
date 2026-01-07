@@ -16,6 +16,9 @@ jobs:
         run: |
           mkdir -p output temp_config sub-store-data
           chmod -R 777 output
+
+          echo "output/" >> .gitignore
+          echo "*.log" >> .gitignore
           
           # Python 注入 (保持你原来的代码)
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
@@ -81,6 +84,8 @@ jobs:
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          # 夺回权限，防止 Permission denied
+          sudo chown -R $USER:$GROUP ${{ github.workspace }}/output
           mkdir -p subs
           for i in {1..15}
           do
@@ -101,10 +106,13 @@ jobs:
                 echo "📢 检测到数据更新，同步中..."
                 
                 # 同步到当前仓库
+                cp -f output/all.yaml ./all.yaml
+                git add all.yaml  # 👈 只添加这一个文件，不要 add 整个目录
+                git commit -m "Auto Update" || echo "无变动"
                 git config --local user.email "actions@github.com"
                 git config --local user.name "GitHub Action"
                 cp -f subs/new_clash.yaml ./all.yaml
-                git add .
+                git add all.yaml
                 git commit -m "Auto Update: $(date +'%H:%M:%S')" || echo ""
                 git push origin main
 
@@ -113,7 +121,7 @@ jobs:
                 cd target-repo-sync
                 git config --local user.email "actions@github.com"
                 git config --local user.name "GitHub Action"
-                git add .
+                git add all.yaml
                 git commit -m "Sync: $(date +'%H:%M:%S')" || echo ""
                 git push origin main
                 cd ..
