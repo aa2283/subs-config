@@ -169,23 +169,24 @@ jobs:
       # ================== 域名同步模块结束 ==================
           
       - name: 8. 精准监听下载链接并实时推送
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # 1. 初始化必要目录
-          mkdir -p subs
-          mkdir -p sub-store-data
-          
           for i in {1..15}
           do
-            echo ">>> 第 $i/15 次检查 (监听 sub 订阅)..."
+            echo ">>> 第 $i/15 次检查..."
             
-            # 2. 检查后端 8299 是否存活 (简化逻辑)
-            if ! curl -s http://127.0.0.1:8299 > /dev/null; then
-              echo "⏳ 等待后端服务响应..."
-              sleep 10
-              continue
+            # 检查后端，如果连不上，等 60 秒再试，而不是秒跳
+            if ! curl -s --connect-timeout 5 http://127.0.0.1:8299 > /dev/null; then
+              echo "❌ 警告: 无法连接到 8299 端口 (Sub-Store 可能没启动或崩了)"
+              echo "💤 强制保活等待 60 秒..."
+              sleep 60
+              continue 
             fi
+
+            # ... 下面是正常的 curl 下载和推送逻辑 ...
+            
+            echo "✅ 本轮检查完成，等待 60 秒..."
+            sleep 60
+          done
             
             # 3. 抓取目标格式 (注意：这里使用 rename 接口，因为你是要重命名后的结果)
             # 如果你的订阅逻辑是在网页端手动点的，保持你的 sub 接口也可以
