@@ -92,14 +92,35 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
           fetch-depth: 0
 
-      - name: 5. sub-store 启动服务 (挂载持久化配置)
+      - name: 5. 路径对齐与服务启动
         run: |
-          # 仅映射 8299 端口
-          mkdir -p sub-store-data
+          # 1. 物理层排查：看看检测结果到底在哪，叫什么名字
+          echo "🔍 正在扫描检测结果..."
+          ls -R ${{ github.workspace }}/output || echo "❌ 警告：output 目录不存在"
+          
+          # 2. 强制清理旧容器，防止端口抢占
+          docker rm -f substore-svc 2>/dev/null || true
+          
+          # 3. 路径对齐（核心修复）：
+          # 假设 Sub-Store 需要在 /app/data 读数据，而你的检测产出在 output
+          # 我们把 output 直接挂载到容器期望的任何位置
           docker run -d --name substore-svc \
             -p 8299:8299 \
             -v ${{ github.workspace }}/output:/app/output \
+            -v ${{ github.workspace }}/output:/app/data \
             ghcr.io/aa2283/subs-check:master
+
+          # 4. 检查容器是否存活
+          sleep 5
+          if ! docker ps | grep -q substore-svc; then
+            echo "❌ 容器启动失败，可能是内部路径冲突"
+            docker logs substore-svc
+            exit 1
+          fi
+
+          # 5. 联通性排查
+          echo "🌐 检查 8299 API 响应..."
+          curl -I http://127.0.0.1:8299 || (echo "❌ API 无响应" && exit 1)
 
       - name: 6. 开启隧道并提取链接 (实时捕获版)
         run: |
