@@ -96,7 +96,6 @@ jobs:
         run: |
           mkdir -p sub-store-data
           docker run -d --name substore-svc \
-            -v $(pwd)/sub-store-data:/opt/app/data \
             -p 8299:8299 ghcr.io/aa2283/subs-check:master
           sleep 15
 
