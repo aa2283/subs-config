@@ -181,52 +181,59 @@ jobs:
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          # 1. 初始化必要目录
+          mkdir -p subs
+          mkdir -p sub-store-data
+          
           for i in {1..15}
           do
-            echo ">>> 第 $i 次检查 (监听 sub 订阅)..."
+            echo ">>> 第 $i/15 次检查 (监听 sub 订阅)..."
             
-            # 1. 强制激活后端 API 状态
-            timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
-            curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
-            sleep 2
+            # 2. 检查后端 8299 是否存活 (简化逻辑)
+            if ! curl -s http://127.0.0.1:8299 > /dev/null; then
+              echo "⏳ 等待后端服务响应..."
+              sleep 10
+              continue
+            fi
             
-            # 2. 抓取两个目标格式到临时文件
-            # 如果你的订阅名不叫 sub，请把下面 URL 里的 sub 改掉
-            curl -s "http://127.0.0.1:8299/download/sub?target=ClashMeta" -o subs/new_clash.yaml
-            curl -s "http://127.0.0.1:8299/download/sub?target=URI" -o subs/new_uri.txt
+            # 3. 抓取目标格式 (注意：这里使用 rename 接口，因为你是要重命名后的结果)
+            # 如果你的订阅逻辑是在网页端手动点的，保持你的 sub 接口也可以
+            curl -s "http://127.0.0.1:8299/download/rename?target=ClashMeta" -o subs/new_clash.yaml
+            curl -s "http://127.0.0.1:8299/download/rename?target=URI" -o subs/new_uri.txt
             
-            # 3. 校验数据有效性 (防止抓到报错网页)
+            # 4. 校验数据有效性
             if grep -q "proxies" subs/new_clash.yaml || grep -q "://" subs/new_uri.txt; then
               
-              # 4. 对比是否有变动 (只要其中一个变了就推送)
+              # 5. 对比是否有变动
               if [ ! -f "subs/all.yaml" ] || ! cmp -s "subs/new_clash.yaml" "subs/all.yaml" || ! cmp -s "subs/new_uri.txt" "subs/all.txt"; then
-                echo "📢 检测到订阅内容更新，正在执行同步..."
+                echo "📢 检测到订阅内容更新，正在同步..."
                 
                 cp subs/new_clash.yaml subs/all.yaml
                 cp subs/new_uri.txt subs/all.txt
                 
-                # 备份 sub-store.json
-                docker cp substore-svc:/opt/app/data/sub-store.json ./sub-store-data/sub-store.json
+                # 备份数据 (修正后的镜像路径)
+                docker cp substore-svc:/app/data/sub-store.json ./sub-store-data/sub-store.json || echo "备份失败"
                 
-                # A. 同步到当前 Sub-Store 仓库
+                # 执行 Git 推送 (增加 pull --rebase 解决冲突)
                 git config --local user.email "actions@github.com"
                 git config --local user.name "GitHub Action"
                 git add .
-                git commit -m "自动存档: $(date +'%H:%M:%S')" || echo ""
+                git commit -m "自动存档: $(date +'%H:%M:%S')" || echo "无需提交"
+                git pull --rebase origin main
                 git push origin main
                 
-                # B. 同步到 v2ray_configs 仓库
-                rm -rf target_repo
-                if git clone https://${MY_TOKEN}@github.com/aa2283/v2ray_configs.git target_repo; then
-                  mkdir -p target_repo/subs
-                  cp -f subs/all.yaml target_repo/subs/all.yaml
-                  cp -f subs/all.txt target_repo/subs/all.txt
+                # 同步到 v2ray_configs 仓库
+                rm -rf target_repo_sync
+                if git clone https://${MY_TOKEN}@github.com/aa2283/v2ray_configs.git target_repo_sync; then
+                  mkdir -p target_repo_sync/subs
+                  cp -f subs/all.yaml target_repo_sync/subs/all.yaml
+                  cp -f subs/all.txt target_repo_sync/subs/all.txt
                   
-                  cd target_repo
+                  cd target_repo_sync
                   git config --local user.email "actions@github.com"
                   git config --local user.name "GitHub Action"
                   git add .
-                  git commit -m "实时更新: $(date +'%H:%M:%S')" || echo ""
+                  git commit -m "实时更新: $(date +'%H:%M:%S')" || echo "无变动"
                   git push origin main
                   cd ..
                   echo "🚀 v2ray_configs 同步完成！"
@@ -235,7 +242,7 @@ jobs:
                 echo "😴 内容暂无变动。"
               fi
             else
-              echo "⚠️ 尚未抓取到有效节点，请确保网页端订阅名正确且已点击[保存]。"
+              echo "⚠️ 尚未抓取到有效节点。请确保在 15 分钟内打开隧道域名并在网页端配置好订阅。"
             fi
             
             sleep 60
