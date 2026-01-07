@@ -79,23 +79,23 @@ jobs:
           echo ">>> 检测阶段完成，进入 Sub-Store 服务启动。"
 
       - name: 启动 Sub-Store 后台服务
-        run: |
-          ROOT_DIR=$(pwd)
-          mkdir -p $ROOT_DIR/temp_config $ROOT_DIR/output
-          echo "show-useless-url: true" > $ROOT_DIR/temp_config/config.yaml
-          chmod -R 755 $ROOT_DIR/output $ROOT_DIR/temp_config
+    run: |
+     ROOT_DIR=$(pwd)
+     mkdir -p $ROOT_DIR/temp_config $ROOT_DIR/output
+     echo "show-useless-url: true" > $ROOT_DIR/temp_config/config.yaml
+     # 删除下面这行！
+     # chmod -R 755 $ROOT_DIR/output $ROOT_DIR/temp_config
 
-          docker rm -f substore-svc 2>/dev/null || true
+     docker rm -f substore-svc 2>/dev/null || true
 
-          docker run -d --name substore-svc \
-            -p 8299:8299 \
-            -v $ROOT_DIR/temp_config:/app/config \
-            -v $ROOT_DIR/output:/app/output \
-            -v $ROOT_DIR/output:/app/data \
-            ghcr.io/aa2283/subs-check:master
+     docker run -d --name substore-svc \
+      -p 8299:8299 \
+      -v $ROOT_DIR/temp_config:/app/config \
+      -v $ROOT_DIR/output:/app/output \
+      -v $ROOT_DIR/output:/app/data \
+      ghcr.io/aa2283/subs-check:master
 
-          echo "✅ Sub-Store 后台服务已启动（端口 8299）"
-
+     echo "✅ Sub-Store 后台服务已启动（端口 8299）"
       - name: 激活 Sub-Store 后端
         run: |
           echo "🌐 正在唤醒并激活 Sub-Store 服务..."
