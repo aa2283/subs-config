@@ -118,7 +118,7 @@ jobs:
         run: |
           echo "🌐 正在尝试激活后端服务..."
           # 1. 模拟浏览器访问首页，触发初始化
-          curl -s http://127.0.0.1:8299 > /dev/null
+          curl -s https://sub-store.vercel.app?api=http://127.0.0.1:8299 > /dev/null
           sleep 5
           
           # 2. 尝试访问一个具体的 API 路径（即使报错也没关系，主要是为了唤醒）
