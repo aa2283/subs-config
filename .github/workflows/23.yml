@@ -1,4 +1,4 @@
-- name: 启动容器与双隧道映射
+name: 启动容器与双隧道映射
         run: |
           # 1. 准备环境
           mkdir -p ${{ github.workspace }}/temp_config
