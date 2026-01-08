@@ -16,102 +16,62 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
-          
           # 下载并启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
           
-          # 【优化点】：循环等待域名生成，最多等待 30 秒
-          echo "等待 Cloudflare 分配域名..."
-          for i in {1..30}; do
+          # 🔄 你的重试循环代码
+          echo "⏳ 等待 Cloudflare 分配隧道域名..."
+          for i in {1..20}; do
             API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
             if [ -n "$API_URL" ]; then
               echo "✅ 成功获取域名: $API_URL"
-              echo "🌐 隧道已就绪: https://sub-store.vercel.app?api=$API_URL"
+              echo "TUNNEL_URL=$API_URL" >> $GITHUB_ENV
+              echo "### 🌐 官方前端地址: https://sub-store.vercel.app?api=$API_URL" >> $GITHUB_STEP_SUMMARY
               break
             fi
+            echo "第 $i 秒: 域名生成中..."
             sleep 1
           done
 
-          if [ -z "$API_URL" ]; then
-            echo "❌ 隧道启动超时，请检查日志"
-            exit 1
-          fi
-
-          # 写入环境变量和摘要
-          echo "TUNNEL_URL=$API_URL" >> $GITHUB_ENV
-          echo "### 🌐 官方前端地址: https://sub-store.vercel.app?api=$API_URL" >> $GITHUB_STEP_SUMMARY
-
-      - name: 3. 执行检测与哨兵同步
+      - name: 3. 执行检测 (后台运行，回避日志弹出)
         run: |
-          # 1. 启动容器 (保持 -t 确保进度条流畅)
+          # 启动前先拉取仓库旧配置到 output
+          [ -f "sub-store.json" ] && cp sub-store.json ./output/sub-store.json || true
+
+          # 启动容器
           docker run --name checker -d -p 8299:8299 \
             -v ${{ github.workspace }}/config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          # 2. 哨兵逻辑 (后台运行)
+          # 【哨兵 A】：负责检测完成后的首轮同步
           (
-            echo ">>> [哨兵] 启动成功，正在监视检测进度..."
             while true; do
               sleep 10
-              # 检查容器是否还在运行，不在了就退出哨兵
               if ! docker ps | grep -q 'checker'; then break; fi
-              
-              # 获取最新日志并剔除颜色字符
-              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-              
-              # 匹配结束信号
+              LOGS=$(docker logs --tail 10 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
               if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
-                echo ">>> [哨兵报告] 检测到任务完成，开始首轮同步..."
-                
-                # 同步节点和配置
-                [ -s "output/all.yaml" ] && cp -f output/all.yaml ./all.yaml
-                [ -f "output/sub-store.json" ] && cp -f output/sub-store.json ./sub-store.json
-                
-                # Git 推送
+                echo ">>> [哨兵] 检测完成，执行首轮备份..."
+                cp -f output/all.yaml ./all.yaml || true
+                cp -f output/sub-store.json ./sub-store.json || true
                 git config --global user.email "bot@github.com"
                 git config --global user.name "AutoBot"
                 git add all.yaml sub-store.json
-                git commit -m "🚀 自动同步 (检测完成): $(date +'%H:%M')" || true
+                git commit -m "🚀 自动同步 (检测完成)" || true
                 git push origin HEAD:${{ github.ref_name }}
-                
-                echo "✅ [哨兵] 初始数据已安全入库，正在准备 Kill 容器..."
-                docker kill checker || true
-                break
+                break 
               fi
             done
           ) &
-
-          # 3. 前台实时显示进度
-          echo "🚀 正在显示实时检测进度..."
-          docker logs -f checker
-              
-              # 信号 B：进度 100% 倒计时
-              if echo "$LOGS" | grep -q "100.0%"; then
-                HUNDRED_TIME=$((HUNDRED_TIME + 10))
-                echo ">>> [哨兵报告] 检测到进度 100%，存盘保底倒计时: ${HUNDRED_TIME}/120 秒"
-                if [ $HUNDRED_TIME -ge 120 ]; then
-                  echo ">>> [哨兵报告] 倒计时结束！执行强制收割..."
-                  docker kill checker || true
-                  break
-                fi
-              else
-                HUNDRED_TIME=0
-              fi
-            done
-          ) &
-
-          # 2. 前台运行 (添加 -t 参数确保进度实时显示)
-          echo "🚀 启动容器，进度将实时显示..."
-          docker run --name checker --rm -t \
-            -p 8299:8299 \
-            -v ${{ github.workspace }}/config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
           
-          echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
+          echo "------------------------------------------------"
+          echo "🚀 检测已在后台启动，请直接进入网页端查看进度："
+          echo "🔗 https://sub-store.vercel.app?api=${{ env.TUNNEL_URL }}"
+          echo "------------------------------------------------"
+
+      
 
       - name: 4. 同步结果回仓库
         run: |
@@ -127,21 +87,32 @@ jobs:
             echo "⚠️ 未发现有效输出文件，跳过同步。"
           fi
 
-      - name: 5. 挂机锁定 (15分钟倒计时)
+      - name: 5. 挂机锁定 (15分钟实时同步网页修改)
         run: |
-          # 1. 复活 API 服务 (静默模式)
-          docker rm -f checker >/dev/null 2>&1 || true
-          docker run --name checker -d -p 8299:8299 \
-            -v ${{ github.workspace }}/config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master >/dev/null
+          echo "✨ [实时同步已开启]：每 30 秒自动保存您的网页修改。"
 
-          
+          # 【哨兵 B】：负责实时监控网页端的修改
+          (
+            [ -f "output/sub-store.json" ] && LAST_MD5=$(md5sum output/sub-store.json | awk '{print $1}') || LAST_MD5=""
+            while true; do
+              sleep 30
+              if [ -f "output/sub-store.json" ]; then
+                CURRENT_MD5=$(md5sum output/sub-store.json | awk '{print $1}')
+                if [ "$CURRENT_MD5" != "$LAST_MD5" ]; then
+                  echo "📢 [实时同步] 发现配置变动，正在推送..."
+                  cp -f output/sub-store.json ./sub-store.json
+                  git config --global user.email "bot@github.com"
+                  git config --global user.name "AutoBot"
+                  git add sub-store.json
+                  git commit -m "📝 网页端实时同步" && git push || true
+                  LAST_MD5=$CURRENT_MD5
+                fi
+              fi
+            done
+          ) &
 
-          # 2. 纯净倒计时
+          # 15分钟倒计时提示
           for i in {15..1}; do
-            echo "⏳ 距离隧道自动关闭还剩: $i 分钟"
+            echo "⏳ 距离任务结束还剩: $i 分钟 (网页操作中...)"
             sleep 60
           done
-
-          echo "⌛ 挂机结束，正在清理现场..."
