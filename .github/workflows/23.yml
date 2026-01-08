@@ -24,7 +24,7 @@ jobs:
           docker run --name checker -d \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            -p 8299:8299 -p 8199:8199 ghcr.io/aa2283/subs-check:master
+            ghcr.io/aa2283/subs-check:master
 
       - name: 6. 启动集成镜像并开启双隧道收割
         env:
