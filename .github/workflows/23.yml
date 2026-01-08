@@ -1,4 +1,4 @@
-name: Sub-Store Ultimate Integration
+name: Sub-Store Fixed Integration
 on:
   workflow_dispatch:
 
@@ -6,83 +6,66 @@ jobs:
   run-service:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出代码与准备环境
-        uses: actions/checkout@v4
-
-      - name: 2. 启动容器 (初始化)
+      - name: 1. 准备宿主机环境
         run: |
+          # 创建配置目录
+          mkdir -p ${{ github.workspace }}/temp_config
           mkdir -p ${{ github.workspace }}/output
-          sudo chmod -R 777 ${{ github.workspace }}/output
           
-          echo "🚀 正在启动镜像..."
-          # 同时映射 8199 和 8299，确保万无一失
+          # 直接在宿主机生成“完美”配置文件
+          # 确保端口和面板开关全部正确
+          cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
+          server:
+            port: 8199
+            addr: 0.0.0.0
+            web-control: true
+          EOF
+          
+          # 给予最高权限，确保 Docker 里的程序能读到它
+          sudo chmod -R 777 ${{ github.workspace }}/temp_config
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          echo "✅ 宿主机配置准备完毕"
+
+      - name: 2. 强力启动容器
+        run: |
+          echo "🚀 挂载配置并启动容器..."
+          # 将准备好的 config.yaml 挂载到容器期望的两个可能路径
+          # 同时映射 8199 和 8299
           docker run --name checker -d \
-            -p 8199:8199 \
-            -p 8299:8299 \
+            -p 8199:8199 -p 8299:8299 \
+            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
+            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config.yaml \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
-          
-          sleep 5
 
-      - name: 3. 激活配置文件 (解决 404/禁用面板核心步)
-        run: |
-          echo "🛠️ 正在容器内部激活 config.yaml..."
-          # 逻辑：查找 example 文件，复制为正式版，并强行将 web-control 设为 true
-          docker exec checker sh -c "
-            if [ -f '/app/config/config.example.yaml' ]; then
-              cp /app/config/config.example.yaml /app/config/config.yaml
-              echo '✅ 已从 /app/config/ 激活配置'
-            elif [ -f '/app/config.example.yaml' ]; then
-              mkdir -p /app/config
-              cp /app/config.example.yaml /app/config/config.yaml
-              echo '✅ 已从 /app/ 激活配置'
-            else
-              echo '⚠️ 未找到示例文件，手动创建基础配置'
-              mkdir -p /app/config
-              echo 'server:\n  port: 8199\n  web-control: true' > /app/config/config.yaml
-            fi
-          "
-          
-          # 强行修正：开启 Web 面板并锁定端口为 8199
-          docker exec checker sed -i 's/web-control: false/web-control: true/g' /app/config/config.yaml || true
-          docker exec checker sed -i 's/port: 8299/port: 8199/g' /app/config/config.yaml || true
-          
-          echo "🔄 重启容器应用新配置..."
-          docker restart checker
-          sleep 10
-          
-          echo "📋 容器最终日志诊断："
+          # 给程序一点时间读取文件
+          sleep 15
+
+          # 如果还是退出了，打印最后报错日志
+          echo "📋 容器运行状态查看："
+          docker ps -a
+          echo "📋 容器最后日志内容："
           docker logs checker
 
-      - name: 4. 端口捕捉与隧道申请
+      - name: 3. 申请隧道
         run: |
-          # 安装 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
           echo "🌐 正在建立 Cloudflare 隧道..."
-          # 既然我们强推了 8199，这里重点申请 8199
           nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel.log > /dev/null 2>&1 &
-          
-          # 备用：也为 8299 开一个（防止镜像内部有硬编码偏移）
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_alt.log > /dev/null 2>&1 &
           
           sleep 15
           URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
-          URL_ALT=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_alt.log | head -n 1)
 
           echo "------------------------------------------------"
           if [ -n "$URL" ]; then
-            echo "✅ 推荐链接 (8199): $URL/admin"
-          fi
-          if [ -n "$URL_ALT" ]; then
-            echo "🔗 备用链接 (8299): $URL_ALT/admin"
+            echo "✅ 访问地址: $URL/admin"
+          else
+            echo "❌ 隧道申请失败，请检查上方容器日志"
           fi
           echo "------------------------------------------------"
-          echo "💡 提示：如果依然 404，请确保在链接后手动添加 /admin"
 
-      - name: 5. 挂机保活 (15 分钟)
-        run: |
           for i in {15..1}; do
             echo "⏳ 隧道有效时间剩余: $i 分钟..."
             sleep 60
