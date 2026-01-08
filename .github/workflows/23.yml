@@ -1,0 +1,141 @@
+name: Subs-Check & Sub-Store 终极缝合修复版
+
+on:
+  schedule:
+    - cron: '15 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-subscriptions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: 1. 检出主仓库
+        uses: actions/checkout@v4
+
+      - name: 2. 运行检测器 (后台常驻模式)
+        run: |
+          mkdir -p output temp_config sub-store-data
+          chmod -R 777 output
+          echo "output/" >> .gitignore
+          echo "*.log" >> .gitignore
+          
+          # Python 注入逻辑
+          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+          python3 -c "
+          import os
+          template_path = 'config/config.yaml'
+          output_path = 'temp_config/config.yaml'
+          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
+          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
+          new_lines = ['show-useless-url: true\n']
+          if os.path.exists(template_path):
+              with open(template_path, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
+                      elif 'show-useless-url' in line: continue
+                      else: new_lines.append(line)
+          with open(output_path, 'w', encoding='utf-8') as f:
+              f.writelines(new_lines)
+          "
+
+          # 启动容器：分配 4GB 内存应对 9000 节点
+          docker run -d --name checker \
+
+            - name: 6.
+        
+
+          # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
+          (
+            echo ">>> [哨兵] 启动成功，正在暗中观察..."
+            HUNDRED_TIME=0
+            while true; do
+              sleep 10
+              if ! docker ps | grep -q 'checker'; then break; fi
+              
+              # 抓取并清洗日志
+              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+              
+              # 信号 A：检测到“保存本地成功”或者“节点为空，跳过保存”
+              if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
+                echo ">>> [哨兵报告] 检测到程序已输出结束信号（存盘成功或结果为空）！即将强制杀掉进程同步..."
+                docker kill checker || true
+                break
+              fi
+              
+              # 信号 B：进度 100% 倒计时
+              if echo "$LOGS" | grep -q "100.0%"; then
+                HUNDRED_TIME=$((HUNDRED_TIME + 10))
+                echo ">>> [哨兵报告] 检测到进度 100%，存盘保底倒计时: ${HUNDRED_TIME}/120 秒"
+                
+                if [ $HUNDRED_TIME -ge 120 ]; then
+                  echo ">>> [哨兵报告] 倒计时结束！执行强制收割..."
+                  docker kill checker || true
+                  break
+                fi
+              else
+                HUNDRED_TIME=0
+              fi
+            done
+          ) & 
+
+          # 3. 前台运行 (展示进度条)
+          docker run --name checker --rm -i \
+            -v ${{ github.workspace }}/temp_config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            -p 8299:8299 ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
+            
+
+          # 后台引流日志
+          docker logs -f checker &
+
+      - name: 3. 检出目标仓库 (v2ray_configs)
+        uses: actions/checkout@v4
+        with:
+          repository: aa2283/v2ray_configs
+          token: ${{ secrets.PAT_TOKEN }}
+          path: target-repo-sync
+
+      - name: 4. 开启隧道并动态脱敏
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          # 启动隧道并保持静默
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile backend.log > /dev/null 2>&1 &
+          
+          echo "等待域名生成..."
+          for i in {1..20}; do
+            API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' backend.log 2>/dev/null | head -n 1)
+            if [ -n "$API_URL" ]; then
+              # 【核心安全操作】对域名进行脱敏处理，日志中将显示为 ***
+              echo "::add-mask::$API_URL"
+              echo "FINAL_API_URL=$API_URL" >> $GITHUB_ENV
+              echo "✅ 隧道已建立并已加密脱敏"
+              break
+            fi
+            sleep 3
+          done
+
+      - name: 5. 准备目标仓库
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          # 使用静默模式克隆，不输出任何进度以防泄露
+          git clone --quiet https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git target-repo-sync >/dev/null 2>&1 || true
+          echo "✅ Target repo ready (Private)"
+          
+      
+
+              echo "------------------------------------------------"
+              echo "⏰ Holding for 15 minutes..."
+              for j in {15..1}; do
+                echo "⏳ Remaining: $j min..."
+                sleep 60
+              done
+              exit 0
+            fi
+            sleep 5
+          done
+          done
