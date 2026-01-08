@@ -127,20 +127,51 @@ jobs:
           echo "💡 提示：在网页端点检测保存，脚本将自动感应并同步仓库。"
 
           # 【后台哨兵】实时监听日志，一旦发现保存动作，立即同步
+          # 【后台哨兵】实时收割 (带防重复触发机制)
           (
             echo "🏹 哨兵已进入潜伏状态，监控日志流..."
+            LAST_SYNC_MARK="" # 记录上一次同步时的最后一行日志
+            
             while true; do
-              sleep 15
+              sleep 20
               if ! docker ps | grep -q 'checker'; then break; fi
               
-              # 清洗日志颜色代码并抓取关键字
-              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+              # 获取最新的日志特征（取最后 1 行检测完成相关的日志）
+              CURRENT_SYNC_MARK=$(docker logs checker 2>&1 | grep -E "保存本地成功|存盘成功|检测完成" | tail -n 1)
               
-              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功|节点为空"; then
-                echo -e "\n🎯 [实时命中] 检测到存盘动作！触发静默同步..."
+              # 如果当前标记不为空，且与上次标记不同，则执行同步
+              if [ -n "$CURRENT_SYNC_MARK" ] && [ "$CURRENT_SYNC_MARK" != "$LAST_SYNC_MARK" ]; then
+                echo -e "\n🎯 [哨兵] 捕获到新的存盘信号，开始同步..."
                 
                 sudo chmod -R 755 output/ 2>/dev/null || true
-                COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
+                
+                # 检查文件是否存在且不为空
+                if [ -s "output/all.yaml" ]; then
+                  COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
+                  
+                  # 静默同步
+                  cp -f output/all.yaml ./all.yaml 2>/dev/null || true
+                  git add all.yaml
+                  git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
+                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
+                  
+                  if [ -d "target-repo-sync" ]; then
+                    cd target-repo-sync
+                    mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
+                    git add .
+                    git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
+                    git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
+                    cd ..
+                  fi
+                  echo "✅ [系统] 同步圆满完成，标记当前状态防止重复。"
+                  LAST_SYNC_MARK="$CURRENT_SYNC_MARK" # 更新标记，进入冷却
+                else
+                  echo "⚠️ [哨兵] 虽有信号但 output/all.yaml 为空，跳过同步。"
+                  LAST_SYNC_MARK="$CURRENT_SYNC_MARK" # 即使为空也更新标记，避免死循环
+                fi
+              fi
+            done
+          ) &
                 
                 # A. 同步主仓库 (不泄露 Token)
                 cp -f output/all.yaml ./all.yaml 2>/dev/null || true
