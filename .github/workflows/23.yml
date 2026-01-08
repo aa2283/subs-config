@@ -21,8 +21,8 @@ jobs:
           echo "✅ Git 环境就绪"
 
       - name: 3.
-
-      # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
+        
+        # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
           (
             echo ">>> [哨兵] 启动成功，正在暗中观察..."
             HUNDRED_TIME=0
@@ -62,7 +62,8 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
           
-          echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
+          echo ">>> [流程] 检测阶段已跳出，进入下一步推送。" 
+          
 
       - name: 4. 开启隧道并挂机
         run: |
