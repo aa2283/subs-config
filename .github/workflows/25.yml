@@ -1,4 +1,4 @@
-name: Sub-Store Real-Time Sync
+name: Sub-Store Real-Time Perfect25
 on:
   workflow_dispatch:
 
@@ -18,9 +18,10 @@ jobs:
           sudo chmod -R 777 ${{ github.workspace }}/output
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
+          # 启动隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
 
-      - name: 3. 实时输出并自动同步 (解决 99% 延迟)
+      - name: 3. 执行检测并挂机
         run: |
           # 启动容器
           docker run --name sub-backend -d \
@@ -35,35 +36,33 @@ jobs:
           echo "🌐 官方前端: https://sub-store.vercel.app?api=$API_URL"
           echo -e "------------------------------------------------\n"
 
-          # 【改进点 1】后台哨兵：悄悄盯着“检测完成”，发现即同步
+          # 【哨兵】在后台盯着日志，检测到完成就推送
           (
             while true; do
-              if docker logs sub-backend 2>&1 | grep -q "检测完成"; then
-                echo "🎯 [哨兵] 捕捉到完成信号，执行同步..."
+              # 匹配“下次检查时间”，这是检测彻底结束的标志
+              if docker logs sub-backend 2>&1 | grep -q "下次检查时间"; then
+                echo "🎯 [哨兵] 监测到检测结束，开始同步仓库..."
+                sleep 2
                 if [ -s "output/all.yaml" ]; then
                   cp -f output/all.yaml ./all.yaml
                   git config --global user.email "bot@github.com"
                   git config --global user.name "AutoBot"
                   git add all.yaml
-                  git commit -m "Auto Update: $(date +'%Y-%m-%d %H:%M')" || true
+                  git commit -m "🚀 自动同步: $(date +'%Y-%m-%d %H:%M')" || true
                   git push origin HEAD:${{ github.ref_name }}
-                  echo "✅ [哨兵] 同步成功！"
+                  echo "✅ [哨兵] 仓库同步圆满完成！"
                 fi
-                break
+                break # 同步完哨兵就退出
               fi
               sleep 5
             done
           ) &
 
-          # 【改进点 2】使用 tail -f 而不是 logs -f，并配合脚本强制刷新
-          # 这样能极大程度绕过管道缓存，让 1% -> 100% 实时跳动
-          timeout 60m docker logs -f sub-backend &
-
-          # 【挂机锁】
-          echo "⏳ 正在显示实时检测进度... 检测完成后隧道将持续锁定 60 分钟。"
-          for i in {60..1}; do
-            if ! docker ps | grep -q 'sub-backend'; then break; fi
-            # 每 5 分钟打个招呼，防止 Action 闲置超时
-            if [ $((i % 5)) -eq 0 ]; then echo "Heartbeat: Tunnel is alive..."; fi
-            sleep 60
-          done
+          # 【主进程】前台实时显示日志，直到容器停止或手动取消
+          # 使用 tail -f 配合 docker logs 能够最快地刷新进度条
+          docker logs -f sub-backend &
+          
+          # 【挂机锁】前台等待，防止 Action 自动取消
+          echo "⏳ 系统已进入挂机模式，隧道持续有效（限时 60 分钟）..."
+          # 使用 read 命令阻塞前台，这比 for 循环更稳
+          sleep 3600
