@@ -1,4 +1,4 @@
-name: Sub-Store Real-Time Perfect25
+name: Sub-Store Anti-Freeze
 on:
   workflow_dispatch:
 
@@ -12,57 +12,48 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 准备环境与隧道
+      - name: 2. 准备隧道 (后台静默)
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          # 启动隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
+          sleep 5
+          API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          echo "TUNNEL_URL=$API_URL" >> $GITHUB_ENV
+          echo "### 🌐 官方前端地址: https://sub-store.vercel.app?api=$API_URL" >> $GITHUB_STEP_SUMMARY
 
-      - name: 3. 执行检测并挂机
+      - name: 3. 执行检测 (实时进度)
         run: |
-          # 启动容器
           docker run --name sub-backend -d \
             -p 8299:8299 \
             -v ${{ github.workspace }}/config/config.yaml:/app/config/config.yaml \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          sleep 10
-          API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
-          echo -e "\n------------------------------------------------"
-          echo "🌐 官方前端: https://sub-store.vercel.app?api=$API_URL"
-          echo -e "------------------------------------------------\n"
+          echo "🚀 正在检测，请观察下方实时进度..."
+          # 使用 timeout 监控，一旦发现“下次检查时间”就结束这一步
+          docker logs -f sub-backend | sed '/下次检查时间/q'
+          echo "🎯 检测已完成！"
 
-          # 【哨兵】在后台盯着日志，检测到完成就推送
-          (
-            while true; do
-              # 匹配“下次检查时间”，这是检测彻底结束的标志
-              if docker logs sub-backend 2>&1 | grep -q "下次检查时间"; then
-                echo "🎯 [哨兵] 监测到检测结束，开始同步仓库..."
-                sleep 2
-                if [ -s "output/all.yaml" ]; then
-                  cp -f output/all.yaml ./all.yaml
-                  git config --global user.email "bot@github.com"
-                  git config --global user.name "AutoBot"
-                  git add all.yaml
-                  git commit -m "🚀 自动同步: $(date +'%Y-%m-%d %H:%M')" || true
-                  git push origin HEAD:${{ github.ref_name }}
-                  echo "✅ [哨兵] 仓库同步圆满完成！"
-                fi
-                break # 同步完哨兵就退出
-              fi
-              sleep 5
-            done
-          ) &
+      - name: 4. 同步结果 (成功标志)
+        run: |
+          if [ -s "output/all.yaml" ]; then
+            cp -f output/all.yaml ./all.yaml
+            git config --global user.email "bot@github.com"
+            git config --global user.name "AutoBot"
+            git add all.yaml
+            git commit -m "🚀 自动同步: $(date +'%Y-%m-%d %H:%M')" || true
+            git push origin HEAD:${{ github.ref_name }}
+            echo "✅ 结果已同步回仓库，文件已永久保存。"
+          fi
 
-          # 【主进程】前台实时显示日志，直到容器停止或手动取消
-          # 使用 tail -f 配合 docker logs 能够最快地刷新进度条
-          docker logs -f sub-backend &
-          
-          # 【挂机锁】前台等待，防止 Action 自动取消
-          echo "⏳ 系统已进入挂机模式，隧道持续有效（限时 60 分钟）..."
-          # 使用 read 命令阻塞前台，这比 for 循环更稳
+      - name: 5. 开启挂机模式 (按需保持隧道)
+        run: |
+          echo "------------------------------------------------"
+          echo "🔗 前端链接: https://sub-store.vercel.app?api=${{ env.TUNNEL_URL }}"
+          echo "------------------------------------------------"
+          echo "⏳ 任务已完成同步，现在进入 60 分钟挂机锁定状态..."
+          echo "💡 如果你不需要使用网页端，可以直接点击右上角 'Cancel workflow' 结束。"
           sleep 3600
