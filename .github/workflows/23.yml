@@ -79,7 +79,7 @@ jobs:
           ) & 
 
           # 3. 前台运行 (展示进度条)
-          docker run --name checker -i \
+          docker run --name checker --rm -i \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -p 8299:8299 ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
