@@ -20,52 +20,88 @@ jobs:
           git config --global user.name "GitHub Action"
           echo "✅ 基础环境准备就绪"
 
-      - name: 3. 强力启动服务 (预置配置版)
+      - name: 3. 强力启动服务 (完整配置版)
         run: |
-          # 1. 创建必要的目录
           mkdir -p ${{ github.workspace }}/temp_config
           mkdir -p ${{ github.workspace }}/output
           
-          # 2. 【关键步骤】预置一个基础配置文件，防止程序卡住
-          # 注意：这里的内容根据你镜像的要求而定，以下是一个通用的基础模板
+          # 【关键】预置正确的 config.yaml 开启 Web 面板
           cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
           server:
-            port: 8299
+            port: 8199
             addr: 0.0.0.0
-          sub-store:
-            enabled: true
+            web-control: true  # 显式开启面板
+          # 这里可以根据需要添加你的订阅链接，或者空着去网页端填
           EOF
 
-          # 3. 赋予权限
           sudo chmod -R 777 ${{ github.workspace }}/temp_config
           sudo chmod -R 777 ${{ github.workspace }}/output
 
           echo "🚀 启动集成容器..."
           docker run --name checker -d \
-            -p 8299:8299 -p 8199:8199 \
+            --network host \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
           sleep 10
-          echo "--- 容器最新日志 ---"
-          docker logs checker
 
-      - name: 4. 再次检查端口
+      - name: 4. 开启隧道与哨兵收割逻辑
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          echo "🔍 扫描监听端口..."
-          for i in {1..20}; do
-            # 探测 8299 是否已经有反应
-            if curl -s http://localhost:8299 > /dev/null; then
-              echo "✅ 服务已成功越过配置检查，上线了！"
-              exit 0
-            fi
-            echo "服务正在初始化... ($i/20)"
-            sleep 3
+          set +x
+          # 建立隧道指向 8199
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel.log > /dev/null 2>&1 &
+          
+          sleep 10
+          TUNNEL_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          echo "------------------------------------------------"
+          echo "🌐 Sub-Store 访问地址: $TUNNEL_URL/admin"
+          echo "------------------------------------------------"
+
+          # 【后台哨兵】实时收割
+          (
+            while true; do
+              sleep 15
+              if ! docker ps | grep -q 'checker'; then break; fi
+              
+              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+              # 匹配你日志中出现的关键字
+              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功|检测完成"; then
+                echo "🎯 [哨兵] 捕获存盘或检测完成信号，开始同步..."
+                
+                sudo chmod -R 755 output/ 2>/dev/null || true
+                [ -f "output/all.yaml" ] || continue # 如果文件还没生成则跳过这次
+                
+                COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
+                
+                # 静默同步
+                cp -f output/all.yaml ./all.yaml 2>/dev/null || true
+                git add all.yaml
+                git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
+                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
+                
+                if [ -d "target-repo-sync" ]; then
+                  cd target-repo-sync
+                  mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
+                  git add .
+                  git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
+                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
+                  cd ..
+                fi
+                echo "✅ 同步圆满完成。"
+              fi
+            done
+          ) &
+
+          # 挂机倒计时
+          for i in {15..1}; do
+            echo "⏳ 存活倒计时: $i 分钟..."
+            sleep 60
           done
-          echo "❌ 依然没起来，查看最终日志："
-          docker logs checker
-          exit 1
 
       - name: 5. 开启双隧道与自动收割哨兵
         env:
