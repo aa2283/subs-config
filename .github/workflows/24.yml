@@ -57,11 +57,11 @@ jobs:
             fi
             
             # 检测是否完成
-            CUR_MARK=$(docker logs checker 2>&1 | grep "检测完成" | tail -n 1)
+            CUR_MARK=$(docker logs checker 2>&1 | grep "保存本地成功" | tail -n 1)
             
-            # 如果检测完成且尚未同步，则执行同步
+            # 如果保存本地成功且尚未同步，则执行同步
             if [ -n "$CUR_MARK" ] && [ "$CUR_MARK" != "$LAST_MARK" ]; then
-              echo "🎯 检测完成信号捕捉成功，开始后台同步..."
+              echo "🎯 保存本地成功信号捕捉成功，开始后台同步..."
               LAST_MARK="$CUR_MARK"
               
               if [ -s "output/all.yaml" ]; then
