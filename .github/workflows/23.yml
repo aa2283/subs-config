@@ -20,52 +20,51 @@ jobs:
           git config --global user.name "GitHub Action"
           echo "✅ 基础环境准备就绪"
 
-      - name: 3. 强力启动服务 (指定启动路径)
+      - name: 3. 强力启动服务 (预置配置版)
         run: |
-          # 1. 赋予挂载目录最高权限，防止权限拒绝导致启动失败
-          sudo chmod -R 777 ${{ github.workspace }}/output
+          # 1. 创建必要的目录
+          mkdir -p ${{ github.workspace }}/temp_config
+          mkdir -p ${{ github.workspace }}/output
+          
+          # 2. 【关键步骤】预置一个基础配置文件，防止程序卡住
+          # 注意：这里的内容根据你镜像的要求而定，以下是一个通用的基础模板
+          cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
+          server:
+            port: 8299
+            addr: 0.0.0.0
+          sub-store:
+            enabled: true
+          EOF
+
+          # 3. 赋予权限
           sudo chmod -R 777 ${{ github.workspace }}/temp_config
+          sudo chmod -R 777 ${{ github.workspace }}/output
 
           echo "🚀 启动集成容器..."
-          # 放弃 --network host，改用显式端口映射，这样更易排查
           docker run --name checker -d \
             -p 8299:8299 -p 8199:8199 \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          # 2. 如果容器启动后秒退，这里会显示原因
           sleep 10
-          echo "--- 容器当前状态 ---"
-          docker ps -a
-          
-          echo "--- 容器实时日志 ---"
-          docker logs checker || echo "无法获取日志"
+          echo "--- 容器最新日志 ---"
+          docker logs checker
 
-      - name: 4. 再次检查端口 (带保底逻辑)
+      - name: 4. 再次检查端口
         run: |
           echo "🔍 扫描监听端口..."
-          # 检查容器内部是否真的在运行服务
-          for i in {1..15}; do
-            if curl -s http://localhost:8299 > /dev/null || curl -s http://localhost:8199 > /dev/null; then
-              echo "✅ 服务已上线！"
+          for i in {1..20}; do
+            # 探测 8299 是否已经有反应
+            if curl -s http://localhost:8299 > /dev/null; then
+              echo "✅ 服务已成功越过配置检查，上线了！"
               exit 0
             fi
-            echo "正在探测端口... ($i/15)"
-            sleep 4
+            echo "服务正在初始化... ($i/20)"
+            sleep 3
           done
-          
-          echo "❌ 依旧无法连接。尝试列出容器内进程："
-          docker exec checker ps aux || echo "无法进入容器"
-          exit 1
-
-          echo "❌ 探测失败！输出所有诊断信息："
-          echo "--- 容器状态 ---"
-          docker ps -a
-          echo "--- 容器实时日志 (关键) ---"
+          echo "❌ 依然没起来，查看最终日志："
           docker logs checker
-          echo "--- 宿主机端口占用情况 ---"
-          sudo netstat -tunlp
           exit 1
 
       - name: 5. 开启双隧道与自动收割哨兵
