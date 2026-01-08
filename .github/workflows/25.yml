@@ -1,4 +1,4 @@
-name: Sub-Store Direct UI Sync 25
+name: Sub-Store One-Time Check 25
 on:
   workflow_dispatch:
 
@@ -12,56 +12,58 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 环境准备
+      - name: 2. 准备环境与隧道
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
           
-          # 提前下载并启动隧道，不干扰主流程
+          # 启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
 
-      - name: 3. 启动并直接显示检测进度 (核心修改)
+      - name: 3. 执行单次检测 (实时显示过程)
         run: |
-          echo "🚀 正在启动容器，即将开始实时检测..."
+          echo "🚀 启动容器并开始检测..."
           
-          # 不加 -d，直接前台运行，进度条会立即弹出
-          # 这样你在 GitHub Action 界面点开这一步就能看到进度 0% -> 100%
-          docker run --name sub-backend \
+          # 启动容器 (后台运行)
+          docker run --name sub-backend -d \
             -p 8299:8299 \
             -v ${{ github.workspace }}/config/config.yaml:/app/config/config.yaml \
             -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master &
-          
-          # 等待几秒让隧道分配域名
+            ghcr.io/aa2283/subs-check:master
+
+          # 等待域名分配
           sleep 10
           API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
-          
-          echo ""
-          echo "------------------------------------------------"
-          echo "🔗 官方前端连接 (检测过程中也可点击):"
-          echo "https://sub-store.vercel.app?api=$API_URL"
-          echo "------------------------------------------------"
-          echo ""
-          
-          # 关键：接管容器日志并持续输出，直到检测完成
-          docker logs -f sub-backend
+          echo -e "\n------------------------------------------------"
+          echo "🌐 官方前端: https://sub-store.vercel.app?api=$API_URL"
+          echo -e "------------------------------------------------\n"
 
-      - name: 4. 检测完成后的同步与挂机
+          # 【核心逻辑】实时追踪日志，直到发现“检测完成”
+          docker logs -f sub-backend | while read line; do
+            echo "$line" # 输出到控制台让你看进度
+            if [[ "$line" == *"检测完成"* ]]; then
+              echo "🎯 捕获到完成信号，准备收工！"
+              # 杀掉容器，这会打破 docker logs -f 的阻塞，进入下一步
+              docker stop sub-backend
+              break
+            fi
+          done
+
+      - name: 4. 同步结果并彻底关闭
         run: |
-          echo "🎯 捕获到容器运行结束或检测完成，开始同步仓库..."
+          echo "📦 正在将检测到的 49 个节点存入仓库..."
           
           if [ -s "output/all.yaml" ]; then
             cp -f output/all.yaml ./all.yaml
             git config --global user.email "bot@github.com"
             git config --global user.name "AutoBot"
             git add all.yaml
-            git commit -m "Auto Update Nodes: $(date +'%Y-%m-%d %H:%M')" || true
+            git commit -m "🚀 自动更新节点: $(date +'%Y-%m-%d %H:%M')" || exit 0
             git push origin HEAD:${{ github.ref_name }}
-            echo "✅ 结果已同步回仓库！"
+            echo "✅ all.yaml 同步成功！"
+          else
+            echo "❌ 未发现 output/all.yaml，检测可能失败。"
+            exit 1
           fi
-
-          # 保持隧道开启一段时间，方便你点击上面的链接进行手动操作
-          echo "⏳ 隧道将保持 30 分钟供你手动调试..."
-          sleep 1800
