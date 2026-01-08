@@ -26,7 +26,7 @@ jobs:
             --network host \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master
+            -p 8299:8299 -p 8199:8199 ghcr.io/aa2283/subs-check:master
 
           echo "🔍 正在扫描容器实际监听的端口..."
           sleep 15
