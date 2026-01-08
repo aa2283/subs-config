@@ -18,71 +18,81 @@ jobs:
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
 
-      - name: 3. 启动集成镜像 (端口 8299/8199)
+      - name: 3. 启动集成镜像 (增强稳定性)
         run: |
-          # 启动容器，同时映射两个可能的端口
+          # 启动容器，并强制使用 host 网络模式确保端口 100% 可被本地访问
           docker run --name checker -d \
+            --network host \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            -p 8299:8299 -p 8199:8199 ghcr.io/aa2283/subs-check:master
+            ghcr.io/aa2283/subs-check:master
+
+          echo "⏳ 等待服务完全启动 (避免 502)..."
+          # 循环检查 8299 端口是否响应
+          for i in {1..30}; do
+            if curl -s http://127.0.0.1:8299 > /dev/null; then
+              echo "✅ 服务已就绪！"
+              break
+            fi
+            echo "正在等待端口 8299..."
+            sleep 2
+          done
 
       - name: 4. 开启双隧道与实时监控
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # 安装 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # 开启 8299 隧道 (后端/API)
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
-          # 开启 8199 隧道 (如果是前端 UI 分离模式)
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
+          # 尝试使用 localhost 而不是 127.0.0.1，有时能解决某些环境下的 502
+          nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
           
           sleep 10
           URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
           URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
           
           echo "------------------------------------------------"
-          echo "🌐 Sub-Store 后端/集成地址: $URL_8299"
-          [ -n "$URL_8199" ] && echo "🎨 Sub-Store 前端界面地址: $URL_8199"
+          echo "🌐 主访问地址 (8299): $URL_8299"
+          echo "🎨 备用地址 (8199): $URL_8199"
           echo "------------------------------------------------"
-          echo "💡 操作指南：在网页点击检测，脚本将在此监控，一旦保存成功即刻自动同步。"
 
-          # 5. 【后台哨兵】实时收割：即便你在网页操作，只要后台出关键字，它就自动 Push
-          echo "🏹 自动收割哨兵已就位..."
-          HUNDRED_TIME=0
-          # 设定 30 分钟总存活时间
-          for i in {1..180}
-          do
-            LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-            
-            # 检测到网页操作触发了“保存”
-            if echo "$LOGS" | grep -qE "保存本地成功|存盘成功"; then
-              echo -e "\n🎯 [实时收割] 检测到您在网页端完成保存！正在同步..."
+          # 启动后台收割哨兵
+          (
+            while true; do
+              sleep 10
+              if ! docker ps | grep -q 'checker'; then break; fi
+              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
               
-              sudo chmod -R 755 output/ 2>/dev/null || true
-              COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
-              
-              # 静默推送
-              git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" --delete main:main 2>/dev/null || true
-              cp -f output/all.yaml ./all.yaml 2>/dev/null || true
-              git add all.yaml
-              git commit -m "Web Trigger Sync: $COUNT nodes" >/dev/null 2>&1 || true
-              git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
-
-              if [ -d "target-repo-sync" ]; then
-                cd target-repo-sync
-                mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
-                git add .
-                git commit -m "Web Sync: $COUNT" >/dev/null 2>&1 || true
-                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
-                cd ..
+              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功"; then
+                echo "🎯 [哨兵] 检测到保存成功，开始同步..."
+                sudo chmod -R 755 output/ 2>/dev/null || true
+                COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
+                
+                cp -f output/all.yaml ./all.yaml 2>/dev/null || true
+                git add all.yaml
+                git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
+                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
+                
+                if [ -d "target-repo-sync" ]; then
+                  cd target-repo-sync
+                  mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
+                  git add .
+                  git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
+                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
+                  cd ..
+                fi
+                echo "✅ 同步圆满完成！"
               fi
-              echo "✅ 同步圆满完成！您可以继续操作或等待结束。"
-            fi
-            
-            # 每 10 秒巡检一次
+            done
+          ) &
+
+          # 保持运行 15 分钟
+          for i in {15..1}; do
+            echo "⏳ 存活倒计时: $i 分钟..."
+            sleep 60
+          done
             sleep 10
             if [ $((i % 6)) -eq 0 ]; then
               echo "⏳ 隧道存活中... 已运行 $((i/6)) 分钟"
