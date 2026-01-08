@@ -1,8 +1,7 @@
-name: Sub-Store 8299 Fixed
+name: Sub-Store 8299 Permanent Tunnel
 on:
   workflow_dispatch:
 
-# 必须声明此权限，否则 Git Push 会报 403
 permissions:
   contents: write
 
@@ -18,7 +17,7 @@ jobs:
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
 
-      - name: 3. 启动容器 (8299 为主)
+      - name: 3. 启动容器
         run: |
           docker run --name checker -d \
             -p 8299:8299 \
@@ -26,52 +25,58 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-      - name: 4. 建立 8299 隧道
+      - name: 4. 建立 8299 永久隧道
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # 仅为 8299 开启隧道
+          # 开启隧道并记录日志
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           
           sleep 10
           URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
 
           echo "------------------------------------------------"
-          echo "✅ Sub-Store 核心服务隧道已开通："
-          echo "🌐 订阅访问地址: $URL_8299/sub/ACL4SSR_Online_Full.yaml"
+          echo "✅ 隧道已锁定，访问地址："
+          echo "🌐 订阅: $URL_8299/sub/ACL4SSR_Online_Full.yaml"
           echo "------------------------------------------------"
 
-      - name: 5. 实时检测与自动推送
+      - name: 5. 实时检测、同步并持续挂机
         run: |
-          # 实时把容器内的测速进度刷到 Action 控制台
+          # 1. 启动实时日志流
           docker logs -f checker & 
 
           LAST_MARK=""
-          # 监控检测状态
-          for i in {30..1}; do
-            if ! docker ps | grep -q 'checker'; then break; fi
+          # 2. 进入长循环 (比如设置 60 分钟)
+          for i in {60..1}; do
+            # 检查容器状态
+            if ! docker ps | grep -q 'checker'; then 
+              echo "⚠️ 容器意外停止，尝试查看原因..."
+              docker logs checker --tail 20
+              break
+            fi
             
-            # 匹配检测完成的标志
+            # 检测是否完成
             CUR_MARK=$(docker logs checker 2>&1 | grep "检测完成" | tail -n 1)
             
+            # 如果检测完成且尚未同步，则执行同步
             if [ -n "$CUR_MARK" ] && [ "$CUR_MARK" != "$LAST_MARK" ]; then
-              echo "🎯 检测已完成，正在同步结果到仓库..."
+              echo "🎯 检测完成信号捕捉成功，开始后台同步..."
               LAST_MARK="$CUR_MARK"
               
               if [ -s "output/all.yaml" ]; then
                 cp -f output/all.yaml ./all.yaml
-                
-                # Git 推送配置
                 git config --global user.email "github-actions[bot]@users.noreply.github.com"
                 git config --global user.name "github-actions[bot]"
                 git add all.yaml
-                git commit -m "Auto Update: $(date +'%Y-%m-%d %H:%M')" || exit 0
-                git push origin HEAD:${{ github.ref_name }}
-                echo "✅ all.yaml 已更新并推送到仓库！"
-                # 成功后可以选择结束任务
-                exit 0
+                git commit -m "Auto Update: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
+                git push origin HEAD:${{ github.ref_name }} && echo "✅ 仓库同步已完成，隧道继续保持..."
               fi
             fi
-            sleep 30
+
+            # 每分钟打印一次心跳，防止 Action 因为无输出被关闭
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "⏳ 隧道及挂机锁存活中... 剩余 $i 分钟"
+            fi
+            sleep 60
           done
