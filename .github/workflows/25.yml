@@ -16,12 +16,29 @@ jobs:
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
-          # 启动隧道
+          
+          # 下载并启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
-          sleep 5
-          API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          
+          # 【优化点】：循环等待域名生成，最多等待 30 秒
+          echo "等待 Cloudflare 分配域名..."
+          for i in {1..30}; do
+            API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+            if [ -n "$API_URL" ]; then
+              echo "✅ 成功获取域名: $API_URL"
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$API_URL" ]; then
+            echo "❌ 隧道启动超时，请检查日志"
+            exit 1
+          fi
+
+          # 写入环境变量和摘要
           echo "TUNNEL_URL=$API_URL" >> $GITHUB_ENV
           echo "### 🌐 官方前端地址: https://sub-store.vercel.app?api=$API_URL" >> $GITHUB_STEP_SUMMARY
 
