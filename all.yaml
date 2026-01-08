@@ -1,11 +1,4 @@
 proxies:
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1F2\U0001F1E9MD_1"
-      password: SS2QvbC9nqLp2sXXZo0BVy4slcErRuCt
-      port: "443"
-      server: 103.35.189.136
-      type: ss
-      udp: true
     - client-fingerprint: chrome
       encryption: none
       flow: xtls-rprx-vision
@@ -31,16 +24,37 @@ proxies:
       udp: true
     - cipher: chacha20-ietf-poly1305
       name: "JIT\U0001F1E8\U0001F1E6CA_2"
-      password: f6c4600d4d513857
-      port: "11202"
-      server: 51.161.33.111
+      password: S6jUK9Fw5fMHgNqlqXObHZWv8Tf4nEkm
+      port: "443"
+      server: 193.203.203.66
+      type: ss
+      udp: true
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1F3\U0001F1F1NL_1"
+      password: 5LD874oS39jQ26cT97NaAo
+      port: "56033"
+      server: 178.173.250.47
+      type: ss
+      udp: true
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1F2\U0001F1E9MD_1"
+      password: SS2QvbC9nqLp2sXXZo0BVy4slcErRuCt
+      port: "443"
+      server: 103.35.189.136
+      type: ss
+      udp: true
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1F2\U0001F1FDMX_1"
+      password: 2b195d916cb84007
+      port: "11201"
+      server: 185.163.1.90
       type: ss
       udp: true
     - cipher: chacha20-ietf-poly1305
       name: "JIT\U0001F1E8\U0001F1E6CA_3"
-      password: S6jUK9Fw5fMHgNqlqXObHZWv8Tf4nEkm
-      port: "443"
-      server: 193.203.203.66
+      password: f6c4600d4d513857
+      port: "11202"
+      server: 51.161.33.111
       type: ss
       udp: true
     - cipher: chacha20-ietf-poly1305
@@ -52,58 +66,52 @@ proxies:
       udp: true
     - cipher: chacha20-ietf-poly1305
       name: "JIT\U0001F1EB\U0001F1F7FR_1"
-      password: f0669fb16446e528
-      port: "11201"
-      server: 54.36.118.33
-      type: ss
-      udp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1EB\U0001F1F7FR_2"
-      password: d974573beb3f30d4
-      port: "11201"
-      server: 57.128.30.201
-      type: ss
-      udp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1EC\U0001F1E7GB_1"
-      password: ab0b81a5bff7ddea
-      port: "29183"
-      server: 57.129.129.139
-      type: ss
-      udp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1EB\U0001F1F7FR_3"
       password: ca5efd5cf9e947ad
       port: "11201"
       server: 54.36.116.190
       type: ss
       udp: true
     - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1EB\U0001F1F7FR_4"
-      password: 27e645dcf11ded1f
-      port: "47000"
-      server: 57.128.190.144
+      name: "JIT\U0001F1FA\U0001F1F8US_2"
+      password: b537ba3e4f4cda0c
+      port: "12053"
+      server: 144.126.158.195
+      type: ss
+      udp: true
+    - client-fingerprint: chrome
+      encryption: none
+      name: "JIT\U0001F1EC\U0001F1E7GB_1"
+      network: tcp
+      port: "2040"
+      reality-opts:
+        public-key: 1RJ2ulM9UyAC8PFy194dV0RTZI6xF6U4CGClhNz9fTg
+        short-id: 50ed6f6007515d63
+      server: nl-amst-node.genadata.online
+      servername: tradingview.com
+      tls: true
+      type: vless
+      udp: true
+      uuid: fa0ba10d-fa04-4638-9760-79c885db744d
+      xudp: true
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1EB\U0001F1F7FR_2"
+      password: f0669fb16446e528
+      port: "11201"
+      server: 54.36.118.33
       type: ss
       udp: true
     - cipher: chacha20-ietf-poly1305
       name: "JIT\U0001F1EC\U0001F1E7GB_2"
-      password: 9bfee1388e960537
-      port: "11201"
-      server: 51.89.117.154
-      type: ss
-      udp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1EB\U0001F1F7FR_5"
-      password: ef720f5b791a60f7
-      port: "11201"
-      server: 54.37.77.212
+      password: ab0b81a5bff7ddea
+      port: "29183"
+      server: 57.129.129.139
       type: ss
       udp: true
     - cipher: chacha20-ietf-poly1305
       name: "JIT\U0001F1EC\U0001F1E7GB_3"
-      password: fa76d6f09c203a59
-      port: "26115"
-      server: 198.244.149.86
+      password: 9bfee1388e960537
+      port: "11201"
+      server: 51.89.117.154
       type: ss
       udp: true
     - client-fingerprint: chrome
@@ -123,10 +131,24 @@ proxies:
       uuid: 309fa273-6579-4cb2-9143-7cad50401eba
       xudp: true
     - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1EB\U0001F1F7FR_3"
+      password: d974573beb3f30d4
+      port: "11201"
+      server: 57.128.30.201
+      type: ss
+      udp: true
+    - cipher: chacha20-ietf-poly1305
       name: "JIT\U0001F1E9\U0001F1EADE_2"
       password: 823cdb94a457faee
       port: "11201"
       server: 141.95.109.160
+      type: ss
+      udp: true
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1EC\U0001F1E7GB_4"
+      password: fa76d6f09c203a59
+      port: "26115"
+      server: 198.244.149.86
       type: ss
       udp: true
     - client-fingerprint: chrome
@@ -149,20 +171,20 @@ proxies:
       udp: true
       uuid: 309fa273-6579-4cb2-9143-7cad50401eba
       xudp: true
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1EB\U0001F1F7FR_4"
+      password: 27e645dcf11ded1f
+      port: "47000"
+      server: 57.128.190.144
+      type: ss
+      udp: true
     - client-fingerprint: chrome
-      name: "JIT\U0001F1FA\U0001F1F8US_2"
+      name: "JIT\U0001F1FA\U0001F1F8US_3"
       password: kkzh2prsyr2ik47as615
       port: "57142"
       server: 64.94.95.118
       skip-cert-verify: true
       type: trojan
-      udp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1F2\U0001F1FDMX_1"
-      password: 2b195d916cb84007
-      port: "11201"
-      server: 185.163.1.90
-      type: ss
       udp: true
     - cipher: aes-256-gcm
       name: "JIT\U0001F1EE\U0001F1EAIE_1"
@@ -171,17 +193,15 @@ proxies:
       server: 38.180.152.210
       type: ss
       udp: true
-    - client-fingerprint: chrome
-      name: "JIT\U0001F1EF\U0001F1F5JP_1"
-      password: 381f2e86233720eacda26d50e9aa26da
-      port: "1933"
-      server: 202.181.103.246
-      skip-cert-verify: false
-      sni: www.nintendogames.net
-      type: trojan
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1EB\U0001F1F7FR_5"
+      password: ef720f5b791a60f7
+      port: "11201"
+      server: 54.37.77.212
+      type: ss
       udp: true
     - client-fingerprint: chrome
-      name: "JIT\U0001F1EF\U0001F1F5JP_2"
+      name: "JIT\U0001F1EF\U0001F1F5JP_1"
       password: 381f2e86233720eacda26d50e9aa26da
       port: "4006"
       server: 202.181.103.246
@@ -201,8 +221,31 @@ proxies:
       udp: true
       ws-opts:
         headers:
-            User-Agent: Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/67.0.3396.99 Safari/537.36
+            User-Agent: Mozilla/5.0 (Linux; Android 7.0; SM-G610F Build/NRD90M) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.111 Mobile Safari/537.36
         path: /assignment
+    - client-fingerprint: chrome
+      encryption: none
+      flow: xtls-rprx-vision
+      name: "JIT\U0001F1E9\U0001F1EADE_4"
+      network: tcp
+      port: "24129"
+      reality-opts:
+        public-key: J1HIxQSniHBlaSUXTLTWyUUpiaeyE8MWmA2evyFZbFQ
+        short-id: a79ee9d365da7d81
+      server: 95.128.157.251
+      servername: vt-1.ozone.ru
+      tls: true
+      type: vless
+      udp: true
+      uuid: 444e6db5-e9b5-4407-a65f-e89b93ed3d71
+      xudp: true
+    - cipher: chacha20-ietf-poly1305
+      name: "JIT\U0001F1FA\U0001F1E6UA_1"
+      password: 9VZoDGTivItaGWVRnCBbwgIFoZw02Mg390K0NiWNW5tHTjlV
+      port: "31348"
+      server: 194.38.23.137
+      type: ss
+      udp: true
     - client-fingerprint: chrome
       encryption: none
       flow: xtls-rprx-vision
@@ -219,33 +262,10 @@ proxies:
       udp: true
       uuid: eb162ab1-a006-4931-b1b3-8fc88a22b10e
       xudp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1FA\U0001F1E6UA_1"
-      password: 9VZoDGTivItaGWVRnCBbwgIFoZw02Mg390K0NiWNW5tHTjlV
-      port: "31348"
-      server: 194.38.23.137
-      type: ss
-      udp: true
-    - client-fingerprint: firefox
-      encryption: none
-      flow: xtls-rprx-vision
-      name: "JIT\U0001F1F5\U0001F1F1PL_1"
-      network: tcp
-      port: "7242"
-      reality-opts:
-        public-key: jGmjU0vrRXCnIwn0rVatYKf5ihWZhMvqidp2ceY1QAM
-        short-id: 8c01e365
-      server: 151.115.96.243
-      servername: modily.net
-      tls: true
-      type: vless
-      udp: true
-      uuid: 859b7d71-a9fc-4234-8e03-42eb876a170a
-      xudp: true
     - client-fingerprint: chrome
       encryption: none
       flow: xtls-rprx-vision
-      name: "JIT\U0001F1EF\U0001F1F5JP_3"
+      name: "JIT\U0001F1EF\U0001F1F5JP_2"
       network: tcp
       port: "27724"
       reality-opts:
@@ -265,36 +285,6 @@ proxies:
       server: 38.180.113.194
       type: ss
       udp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1FA\U0001F1F8US_3"
-      password: b537ba3e4f4cda0c
-      port: "12053"
-      server: 144.126.158.195
-      type: ss
-      udp: true
-    - client-fingerprint: chrome
-      name: "JIT\U0001F1ED\U0001F1F0HK_1"
-      password: 381f2e86233720eacda26d50e9aa26da
-      port: "443"
-      server: 58.152.110.104
-      skip-cert-verify: false
-      sni: www.nintendogames.net
-      type: trojan
-      udp: true
-    - client-fingerprint: chrome
-      http-opts:
-        headers: {}
-        path:
-            - /
-      name: "JIT\U0001F1F3\U0001F1F1NL_1"
-      network: tcp
-      port: "8443"
-      server: vpn.zorixvpn.site
-      tls: true
-      type: vless
-      udp: true
-      uuid: 4ad217a5-5a96-4095-a96c-837ffc73f97c
-      xudp: true
     - client-fingerprint: chrome
       encryption: none
       flow: xtls-rprx-vision
@@ -316,16 +306,23 @@ proxies:
       uuid: eb162ab1-a006-4931-b1b3-8fc88a22b10e
       xudp: true
     - client-fingerprint: chrome
-      name: "JIT\U0001F1ED\U0001F1F0HK_2"
-      password: BxceQaOe
+      encryption: none
+      flow: xtls-rprx-vision
+      name: "JIT\U0001F1F3\U0001F1F1NL_2"
+      network: tcp
       port: "443"
-      server: 58.152.25.86
-      skip-cert-verify: true
-      sni: t.me/ripaojiedian
-      type: trojan
+      reality-opts:
+        public-key: taQhPfbUTkiTOyIekh1ucvlnswJTwFRmyD8UhaX4u1M
+        short-id: c9782e
+      server: 62.84.102.162
+      servername: store.steampowered.com
+      tls: true
+      type: vless
       udp: true
+      uuid: ac825282-e2bc-45b1-a7ee-aa8f5effc4d7
+      xudp: true
     - client-fingerprint: chrome
-      name: "JIT\U0001F1ED\U0001F1F0HK_3"
+      name: "JIT\U0001F1ED\U0001F1F0HK_1"
       password: BxceQaOe
       port: "443"
       server: 58.152.25.236
@@ -334,20 +331,18 @@ proxies:
       type: trojan
       udp: true
     - client-fingerprint: chrome
-      encryption: none
-      flow: xtls-rprx-vision
-      name: "JIT\U0001F1E9\U0001F1EADE_4"
+      http-opts:
+        headers: {}
+        path:
+            - /
+      name: "JIT\U0001F1F3\U0001F1F1NL_3"
       network: tcp
-      port: "24129"
-      reality-opts:
-        public-key: J1HIxQSniHBlaSUXTLTWyUUpiaeyE8MWmA2evyFZbFQ
-        short-id: a79ee9d365da7d81
-      server: 95.128.157.251
-      servername: vt-1.ozone.ru
+      port: "8443"
+      server: vpn.zorixvpn.site
       tls: true
       type: vless
       udp: true
-      uuid: 444e6db5-e9b5-4407-a65f-e89b93ed3d71
+      uuid: 4ad217a5-5a96-4095-a96c-837ffc73f97c
       xudp: true
     - client-fingerprint: chrome
       encryption: none
@@ -364,26 +359,44 @@ proxies:
       udp: true
       uuid: aa497581-d3ac-4602-8512-7747ca016eac
       xudp: true
-    - cipher: aes-256-gcm
-      name: "JIT\U0001F1F9\U0001F1F7TR_3"
-      password: faBAoD54k87UJG7
-      port: "2376"
-      server: 185.123.101.64
-      type: ss
+    - client-fingerprint: firefox
+      encryption: none
+      flow: xtls-rprx-vision
+      name: "JIT\U0001F1F5\U0001F1F1PL_1"
+      network: tcp
+      port: "7242"
+      reality-opts:
+        public-key: jGmjU0vrRXCnIwn0rVatYKf5ihWZhMvqidp2ceY1QAM
+        short-id: 8c01e365
+      server: 151.115.96.243
+      servername: modily.net
+      tls: true
+      type: vless
+      udp: true
+      uuid: 859b7d71-a9fc-4234-8e03-42eb876a170a
+      xudp: true
+    - client-fingerprint: chrome
+      name: "JIT\U0001F1ED\U0001F1F0HK_2"
+      password: 381f2e86233720eacda26d50e9aa26da
+      port: "443"
+      server: 58.152.110.104
+      skip-cert-verify: false
+      sni: www.nintendogames.net
+      type: trojan
       udp: true
     - client-fingerprint: chrome
-      name: "JIT\U0001F1ED\U0001F1F0HK_4"
+      name: "JIT\U0001F1ED\U0001F1F0HK_3"
       password: BxceQaOe
       port: "443"
-      server: 58.152.46.60
+      server: 58.152.25.86
       skip-cert-verify: true
-      sni: '������ [By DukeMehdi] b2n.ir/v2ray-configs | 783 '
+      sni: t.me/ripaojiedian
       type: trojan
       udp: true
     - client-fingerprint: chrome
       encryption: none
       flow: xtls-rprx-vision
-      name: "JIT\U0001F1EF\U0001F1F5JP_4"
+      name: "JIT\U0001F1EF\U0001F1F5JP_3"
       network: tcp
       port: "443"
       reality-opts:
@@ -398,35 +411,18 @@ proxies:
       xudp: true
     - client-fingerprint: chrome
       encryption: none
-      flow: xtls-rprx-vision
-      name: "JIT\U0001F1F7\U0001F1FARU_1"
+      name: "JIT\U0001F1EB\U0001F1EEFI_2"
       network: tcp
-      port: "443"
+      port: "47539"
       reality-opts:
-        public-key: EltWI8AOqkN8lMjRycweRRoFRah5hu6xiKtgBmQOdE8
-        short-id: 1ed136481e0ede74
-      server: 109.248.222.151
-      servername: nsk.geodema.network
+        public-key: uapzi5mhLkADHuak0eXEKq9vIl2A8IGrMhjdIG-tn3U
+        short-id: 82a55f31981ea6be
+      server: 178.17.53.28
+      servername: yandex.ru
       tls: true
       type: vless
       udp: true
-      uuid: a91e64f0-9295-499d-bf4a-661ad99d4938
-      xudp: true
-    - client-fingerprint: chrome
-      encryption: none
-      flow: xtls-rprx-vision
-      name: "JIT\U0001F1EE\U0001F1F9IT_1"
-      network: tcp
-      port: "8443"
-      reality-opts:
-        public-key: _CjW0Khlrr5z5oc9Oy6-w2ZEanz-zMBktVn5EOX9oTM
-        short-id: 6419bed7fd0a2cff
-      server: 176.109.109.58
-      servername: tradingview.com
-      tls: true
-      type: vless
-      udp: true
-      uuid: bc32639e-100a-40ad-b064-b0829a0bd197
+      uuid: 447c45cd-ade0-4bfe-90a0-3e581829f741
       xudp: true
     - client-fingerprint: chrome
       name: "JIT\U0001F1FA\U0001F1F8US_5"
@@ -446,57 +442,35 @@ proxies:
       udp: true
     - client-fingerprint: chrome
       encryption: none
-      name: "JIT\U0001F1EB\U0001F1EEFI_2"
-      network: tcp
-      port: "47539"
-      reality-opts:
-        public-key: uapzi5mhLkADHuak0eXEKq9vIl2A8IGrMhjdIG-tn3U
-        short-id: 82a55f31981ea6be
-      server: 178.17.53.28
-      servername: yandex.ru
-      tls: true
-      type: vless
-      udp: true
-      uuid: 447c45cd-ade0-4bfe-90a0-3e581829f741
-      xudp: true
-    - cipher: chacha20-ietf-poly1305
-      name: "JIT\U0001F1F3\U0001F1F1NL_2"
-      password: 5LD874oS39jQ26cT97NaAo
-      port: "56033"
-      server: 178.173.250.47
-      type: ss
-      udp: true
-    - client-fingerprint: chrome
-      encryption: none
       flow: xtls-rprx-vision
-      name: "JIT\U0001F1EA\U0001F1EAEE_1"
-      network: tcp
-      port: "443"
-      reality-opts:
-        public-key: WvNaAxI0W__qfUKbtysH4IwF155YENlv3PG6crCmPkA
-        short-id: ""
-      server: tbankru.outlinekeys.net
-      servername: tbankru.outlinekeys.net
-      tls: true
-      type: vless
-      udp: true
-      uuid: eb162ab1-a006-4931-b1b3-8fc88a22b10e
-      xudp: true
-    - client-fingerprint: chrome
-      encryption: none
-      flow: xtls-rprx-vision
-      name: "JIT\U0001F1E6\U0001F1FAAU_1"
+      name: "JIT\U0001F1EE\U0001F1F9IT_1"
       network: tcp
       port: "8443"
       reality-opts:
-        public-key: gZGVp5PUdafgsmi1gawa1yLuha_XhXRc_W9SvPiGmTY
-        short-id: 7cad5040
-      server: 45.15.185.69
-      servername: www.cloudflare.com
+        public-key: _CjW0Khlrr5z5oc9Oy6-w2ZEanz-zMBktVn5EOX9oTM
+        short-id: 6419bed7fd0a2cff
+      server: 176.109.109.58
+      servername: tradingview.com
       tls: true
       type: vless
       udp: true
-      uuid: 309fa273-6579-4cb2-9143-7cad50401eba
+      uuid: bc32639e-100a-40ad-b064-b0829a0bd197
+      xudp: true
+    - client-fingerprint: chrome
+      encryption: none
+      flow: xtls-rprx-vision
+      name: "JIT\U0001F1F7\U0001F1FARU_1"
+      network: tcp
+      port: "443"
+      reality-opts:
+        public-key: EltWI8AOqkN8lMjRycweRRoFRah5hu6xiKtgBmQOdE8
+        short-id: 1ed136481e0ede74
+      server: 109.248.222.151
+      servername: nsk.geodema.network
+      tls: true
+      type: vless
+      udp: true
+      uuid: a91e64f0-9295-499d-bf4a-661ad99d4938
       xudp: true
     - client-fingerprint: chrome
       encryption: none
@@ -513,42 +487,17 @@ proxies:
       udp: true
       uuid: dac9a640-0098-45b1-b79f-dc14efb99237
       xudp: true
-    - client-fingerprint: chrome
-      encryption: none
-      flow: xtls-rprx-vision
-      name: "JIT\U0001F1EF\U0001F1F5JP_5"
-      network: tcp
-      port: "56482"
-      reality-opts:
-        public-key: W9BjX6YmCIVsjhKMlz233Yoe0xcf0SVHfvPKqbf3vCg
-        short-id: ""
-      server: 178.239.124.30
-      servername: cloudcircus.jp
-      tls: true
-      type: vless
+    - cipher: aes-256-gcm
+      name: "JIT\U0001F1F9\U0001F1F7TR_3"
+      password: faBAoD54k87UJG7
+      port: "2376"
+      server: 185.123.101.64
+      type: ss
       udp: true
-      uuid: 2c487d9d-25a1-4b79-aed1-086b8c3082ca
-      xudp: true
     - client-fingerprint: chrome
       encryption: none
       flow: xtls-rprx-vision
-      name: JIT❓Other_1
-      network: tcp
-      port: "21755"
-      reality-opts:
-        public-key: HkLK62c3szw51gYtORRnPlO0v6kxOSd_aCd0J4rTKzo
-        short-id: a79ee9d365da7d81
-      server: 194.87.219.24
-      servername: storage.yandexcloud.net
-      tls: true
-      type: vless
-      udp: true
-      uuid: 52d910a0-e17a-43d1-976c-d3775cf1e339
-      xudp: true
-    - client-fingerprint: chrome
-      encryption: none
-      flow: xtls-rprx-vision
-      name: JIT❓Other_2
+      name: "JIT\U0001F1EE\U0001F1F1IL_1"
       network: tcp
       port: "443"
       reality-opts:
@@ -568,3 +517,19 @@ proxies:
       server: 38.247.64.176
       type: ss
       udp: true
+    - client-fingerprint: chrome
+      encryption: none
+      flow: xtls-rprx-vision
+      name: "JIT\U0001F1E6\U0001F1FAAU_1"
+      network: tcp
+      port: "8443"
+      reality-opts:
+        public-key: gZGVp5PUdafgsmi1gawa1yLuha_XhXRc_W9SvPiGmTY
+        short-id: 7cad5040
+      server: 45.15.185.69
+      servername: www.cloudflare.com
+      tls: true
+      type: vless
+      udp: true
+      uuid: 309fa273-6579-4cb2-9143-7cad50401eba
+      xudp: true
