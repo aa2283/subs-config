@@ -18,61 +18,60 @@ jobs:
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
 
-      - name: 3. 启动集成镜像 (增强稳定性)
+      - name: 3. 强制启动服务并自动探测端口
         run: |
-          # 启动容器，并强制使用 host 网络模式确保端口 100% 可被本地访问
+          # 1. 尝试显式启动 sub-store 服务（如果是该镜像需要手动启动的话）
+          # 我们在后台运行它，确保它不会阻塞脚本
           docker run --name checker -d \
             --network host \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          echo "⏳ 等待服务完全启动 (避免 502)..."
-          # 循环检查 8299 端口是否响应
-          for i in {1..30}; do
-            if curl -s http://127.0.0.1:8299 > /dev/null; then
-              echo "✅ 服务已就绪！"
-              break
-            fi
-            echo "正在等待端口 8299..."
-            sleep 2
-          done
+          echo "🔍 正在扫描容器实际监听的端口..."
+          sleep 15
+          
+          # 自动获取容器正在监听的端口 (排除掉常见的系统端口)
+          REAL_PORT=$(sudo netstat -tunlp | grep -oP '(?<=0.0.0.0:)[0-9]+|(?<=:::)[0-9]+' | grep -vE '22|53|111' | head -n 1 || echo "8299")
+          echo "🎯 探测到服务可能运行在端口: $REAL_PORT"
+          echo "REAL_PORT=$REAL_PORT" >> $GITHUB_ENV
 
-      - name: 4. 开启双隧道与实时监控
+      - name: 4. 开启动态隧道与哨兵收割
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
+          PORT=${{ env.REAL_PORT }}
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # 尝试使用 localhost 而不是 127.0.0.1，有时能解决某些环境下的 502
-          nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
-          nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
+          # 开启指向探测到的端口的隧道
+          nohup ./cloudflared tunnel --url http://127.0.0.1:$PORT --logfile tunnel.log > /dev/null 2>&1 &
           
           sleep 10
-          URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
-          URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
-          
+          TUNNEL_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
           echo "------------------------------------------------"
-          echo "🌐 主访问地址 (8299): $URL_8299"
-          echo "🎨 备用地址 (8199): $URL_8199"
+          echo "🌐 Sub-Store 访问地址: $TUNNEL_URL"
           echo "------------------------------------------------"
 
-          # 启动后台收割哨兵
+          # 启动哨兵：监控检测是否完成
           (
             while true; do
-              sleep 10
+              sleep 15
               if ! docker ps | grep -q 'checker'; then break; fi
-              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
               
-              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功"; then
-                echo "🎯 [哨兵] 检测到保存成功，开始同步..."
+              # 这里的逻辑：只要你在网页点了“检测”并产生了日志，或者检测自动完成了
+              LOGS=$(docker logs --tail 50 checker 2>&1 || echo "")
+              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功|节点为空"; then
+                echo "🎯 [哨兵] 捕获存盘信号，开始推送仓库..."
+                
                 sudo chmod -R 755 output/ 2>/dev/null || true
                 COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
                 
+                # 静默同步
+                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" --delete main:main 2>/dev/null || true
                 cp -f output/all.yaml ./all.yaml 2>/dev/null || true
                 git add all.yaml
-                git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
+                git commit -m "Web Sync: $COUNT nodes" >/dev/null 2>&1 || true
                 git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
                 
                 if [ -d "target-repo-sync" ]; then
@@ -83,18 +82,13 @@ jobs:
                   git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
                   cd ..
                 fi
-                echo "✅ 同步圆满完成！"
+                echo "✅ 同步完成！"
               fi
             done
           ) &
 
-          # 保持运行 15 分钟
+          # 挂机倒计时
           for i in {15..1}; do
-            echo "⏳ 存活倒计时: $i 分钟..."
+            echo "⏳ 隧道存活中 (端口 $PORT): $i 分钟..."
             sleep 60
-          done
-            sleep 10
-            if [ $((i % 6)) -eq 0 ]; then
-              echo "⏳ 隧道存活中... 已运行 $((i/6)) 分钟"
-            fi
           done
