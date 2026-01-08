@@ -20,6 +20,8 @@ jobs:
           git config --global user.name "GitHub Action"
           echo "✅ Git 环境就绪"
 
+      - name: 3.
+
       # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
           (
             echo ">>> [哨兵] 启动成功，正在暗中观察..."
