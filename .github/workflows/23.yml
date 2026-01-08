@@ -9,66 +9,53 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 彻底初始化配置 (强制开启 Web)
+      - name: 启动容器并申请双路隧道
         run: |
-          mkdir -p ${{ github.workspace }}/temp_config
-          mkdir -p ${{ github.workspace }}/output
+          # 1. 强力清理旧容器
+          docker rm -f checker || true
           
-          # 创建配置文件，确保 web-control 为 true
-          cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
-          server:
-            port: 8199
-            addr: 0.0.0.0
-            web-control: true
-          EOF
-          
-          sudo chmod -R 777 ${{ github.workspace }}/temp_config
-          sudo chmod -R 777 ${{ github.workspace }}/output
-
-      - name: 3. 启动容器 (带环境变量双重保险)
-        run: |
-          # 有些镜像支持通过环境变量开启 Web，这里加上作为双重保险
+          # 2. 启动容器 (明确映射 8199 和 8299)
+          echo "🚀 启动容器中..."
           docker run --name checker -d \
-            --network host \
-            -e "SUB_STORE_FRONTEND=true" \
-            -e "WEB_CONTROL=true" \
-            -v ${{ github.workspace }}/temp_config:/app/config \
+            -p 8199:8199 \
+            -p 8299:8299 \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
-          
-          echo "⏳ 等待服务完全预热..."
-          sleep 15
-          docker logs checker | grep "Web控制面板" || echo "⚠️ 警告：日志中未发现面板启动字样"
 
-      - name: 4. 申请隧道并捕捉 404 故障
+          # 3. 实时监控：看看它到底启动在哪
+          sleep 10
+          echo "📋 容器启动实时日志："
+          docker logs checker
+          
+          echo "📡 端口监听状态确认："
+          sudo netstat -tunlp | grep -E '8199|8299'
+
+      - name: 建立 Cloudflare 隧道
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          echo "🌐 正在建立双端口映射..."
+          echo "🌐 正在为两个端口分别申请隧道..."
           nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           
           sleep 15
-          URL_A=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
-          URL_B=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
+          URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+          URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
 
           echo "------------------------------------------------"
-          if [ -n "$URL_A" ]; then
-            echo "🚀 方案 A (8199):"
-            echo "尝试 1 (最推荐): $URL_A/admin"
-            echo "尝试 2 (根路径): $URL_A/"
+          if [ -n "$URL_8199" ]; then
+            echo "✅ 隧道 A (8199): $URL_8199/admin"
+            echo "🔗 如果 404，尝试: $URL_8199/"
           fi
-          echo "----------------"
-          if [ -n "$URL_B" ]; then
-            echo "🚀 方案 B (8299):"
-            echo "尝试 1 (最推荐): $URL_B/admin"
-            echo "尝试 2 (根路径): $URL_B/"
+          if [ -n "$URL_8299" ]; then
+            echo "✅ 隧道 B (8299): $URL_8299/admin"
+            echo "🔗 如果 404，尝试: $URL_8299/"
           fi
           echo "------------------------------------------------"
           
-          # 挂机保活
+          # 挂机倒计时
           for i in {15..1}; do
-            echo "⏳ 存活倒计时: $i 分钟 (如遇 404 请检查 URL 结尾是否带 /admin)"
+            echo "⏳ 隧道存活中... $i 分钟"
             sleep 60
           done
