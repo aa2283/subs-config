@@ -46,56 +46,69 @@ jobs:
 
           sleep 10
 
-      - name: 4. 开启隧道与哨兵收割逻辑
+      - name: 6. 启动集成服务与防重触发哨兵
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          set +x
-          # 建立隧道指向 8199
+          # 1. 预置配置 (开启 Web 面板)
+          mkdir -p ${{ github.workspace }}/temp_config
+          cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
+          server:
+            port: 8199
+            addr: 0.0.0.0
+            web-control: true
+          EOF
+          
+          # 2. 启动容器
+          docker run --name checker -d \
+            --network host \
+            -v ${{ github.workspace }}/temp_config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master
+
+          # 3. 哨兵逻辑 (防刷同步版)
+          (
+            echo "🏹 哨兵已进入潜伏状态..."
+            LAST_MARK=""
+            while true; do
+              sleep 20
+              if ! docker ps | grep -q 'checker'; then break; fi
+              
+              # 获取包含关键字的最后一行日志作为标记
+              CUR_MARK=$(docker logs checker 2>&1 | grep -E "保存本地成功|存盘成功|检测完成" | tail -n 1)
+              
+              if [ -n "$CUR_MARK" ] && [ "$CUR_MARK" != "$LAST_MARK" ]; then
+                echo "🎯 [哨兵] 捕获新信号，同步仓库..."
+                LAST_MARK="$CUR_MARK"
+                
+                if [ -s "output/all.yaml" ]; then
+                  sudo chmod -R 755 output/ 2>/dev/null || true
+                  cp -f output/all.yaml ./all.yaml
+                  git add all.yaml
+                  git commit -m "Auto Update" >/dev/null 2>&1 || true
+                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
+                  echo "✅ 同步完成。"
+                fi
+              fi
+            done
+          ) &
+
+          # 4. 开启隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel.log > /dev/null 2>&1 &
           
-          sleep 10
-          TUNNEL_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          sleep 12
+          URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
           echo "------------------------------------------------"
-          echo "🌐 Sub-Store 访问地址: $TUNNEL_URL/admin"
+          echo "👉 管理后台: $URL/admin"
+          echo "👉 备用路径: $URL/"
           echo "------------------------------------------------"
 
-          # 【后台哨兵】实时收割
-          (
-            while true; do
-              sleep 15
-              if ! docker ps | grep -q 'checker'; then break; fi
-              
-              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-              # 匹配你日志中出现的关键字
-              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功|检测完成"; then
-                echo "🎯 [哨兵] 捕获存盘或检测完成信号，开始同步..."
-                
-                sudo chmod -R 755 output/ 2>/dev/null || true
-                [ -f "output/all.yaml" ] || continue # 如果文件还没生成则跳过这次
-                
-                COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
-                
-                # 静默同步
-                cp -f output/all.yaml ./all.yaml 2>/dev/null || true
-                git add all.yaml
-                git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
-                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
-                
-                if [ -d "target-repo-sync" ]; then
-                  cd target-repo-sync
-                  mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
-                  git add .
-                  git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
-                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
-                  cd ..
-                fi
-                echo "✅ 同步圆满完成。"
-              fi
-            done
-          ) &
+          for i in {15..1}; do
+            echo "⏳ 隧道存活中: $i 分钟..."
+            sleep 60
+          done
 
           # 挂机倒计时
           for i in {15..1}; do
