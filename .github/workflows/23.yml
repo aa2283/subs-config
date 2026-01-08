@@ -81,7 +81,7 @@ jobs:
 
           # --- 前台启动集成容器 ---
           # 假设该镜像的 Web 端口是 8299 (或它原本定义的端口)
-          docker run --name checker -d \
+          docker run --name checker -i \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             -p 8299:8299 ghcr.io/aa2283/subs-check:master
