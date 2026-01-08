@@ -95,16 +95,26 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master >/dev/null
 
-          # 【新增】：挂机期间的实时同步哨兵
+          # 【静默版】实时同步哨兵
           (
             while true; do
               sleep 30
-              # 检查 output 目录下的 json 是否有变动并同步
-              if [ -n "$(git status --porcelain output/sub-store.json)" ] || [ -n "$(git diff sub-store.json output/sub-store.json)" ]; then
-                cp -f output/sub-store.json ./sub-store.json || true
-                git add sub-store.json
-                git commit -m "📝 网页端配置实时备份: $(date +'%H:%M')" && git push || true
+              # 先把容器里的最新配置同步出来
+              cp -f output/sub-store.json ./sub-store.json || true
+              cp -f output/all.yaml ./all.yaml || true
+              
+              # 检查是否有变动，如果有， porcelain 会输出内容，否则为空
+              CHANGES=$(git status --porcelain all.yaml sub-store.json)
+              
+              if [ -n "$CHANGES" ]; then
+                echo "📢 [实时同步] 检测到网页端改动，正在推送..."
+                git config --global user.email "bot@github.com"
+                git config --global user.name "AutoBot"
+                git add all.yaml sub-store.json
+                git commit -m "📝 网页端实时同步: $(date +'%H:%M')" && git push || true
+                echo "✅ [实时同步] 已入库。"
               fi
+              # 如果没有 CHANGES，就什么都不打印，保持日志清爽
             done
           ) &
 
