@@ -28,6 +28,7 @@ jobs:
             API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
             if [ -n "$API_URL" ]; then
               echo "✅ 成功获取域名: $API_URL"
+              echo "🌐 隧道已就绪: https://sub-store.vercel.app?api=$API_URL"
               break
             fi
             sleep 1
