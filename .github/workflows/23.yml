@@ -20,80 +20,47 @@ jobs:
           git config --global user.name "GitHub Action"
           echo "✅ Git 环境就绪"
 
-      - name: 3. 运行检测并由哨兵收割
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          set +x
-          echo "🚀 启动集成检测容器与哨兵..."
-
-          # --- 哨兵进程 (后台) ---
+      # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
           (
+            echo ">>> [哨兵] 启动成功，正在暗中观察..."
             HUNDRED_TIME=0
             while true; do
               sleep 10
               if ! docker ps | grep -q 'checker'; then break; fi
               
+              # 抓取并清洗日志
               LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
               
-              # 匹配关键字：只要检测完成，立刻触发同步
-              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功|节点为空，跳过保存"; then
-                echo -e "\n🎯 [哨兵] 捕获结束信号！开始同步数据..."
-                
-                # 执行静默同步逻辑
-                sudo chmod -R 755 output/ 2>/dev/null || true
-                COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
-                
-                # 同步主仓库
-                cp -f output/all.yaml ./all.yaml 2>/dev/null || true
-                git add all.yaml
-                git commit -m "Auto Update: $COUNT nodes" >/dev/null 2>&1 || true
-                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
-
-                # 同步私有库
-                if [ -d "target-repo-sync" ]; then
-                  cd target-repo-sync
-                  mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
-                  git add .
-                  git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
-                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
-                  cd ..
-                fi
-                echo "✅ 数据同步已完成 ($COUNT 节点)，系统继续运行以供网页访问。"
-                # 任务完成后创建信号，告诉主进程可以进入倒计时了
-                touch .sync_done
+              # 信号 A：检测到“保存本地成功”或者“节点为空，跳过保存”
+              if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
+                echo ">>> [哨兵报告] 检测到程序已输出结束信号（存盘成功或结果为空）！即将强制杀掉进程同步..."
+                docker kill checker || true
                 break
               fi
               
-              # 100.0% 补齐逻辑
+              # 信号 B：进度 100% 倒计时
               if echo "$LOGS" | grep -q "100.0%"; then
                 HUNDRED_TIME=$((HUNDRED_TIME + 10))
+                echo ">>> [哨兵报告] 检测到进度 100%，存盘保底倒计时: ${HUNDRED_TIME}/120 秒"
+                
                 if [ $HUNDRED_TIME -ge 120 ]; then
-                  echo ">>> [哨兵] 100% 停留超时，强制触发同步..."
-                  touch .sync_done # 强制触发同步
+                  echo ">>> [哨兵报告] 倒计时结束！执行强制收割..."
+                  docker kill checker || true
                   break
                 fi
               else
                 HUNDRED_TIME=0
               fi
             done
-          ) &
+          ) & 
 
-          # --- 前台启动集成容器 ---
-          # 假设该镜像的 Web 端口是 8299 (或它原本定义的端口)
-          docker run --name checker -i \
+          # 3. 前台运行 (展示进度条)
+          docker run --name checker --rm -i \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            -p 8299:8299 ghcr.io/aa2283/subs-check:master
-
-          # 实时展示日志直到同步信号出现
-          docker logs -f checker 2>&1 | while read line; do
-            echo "$line" | grep -viE "token|secret|key"
-            if [ -f ".sync_done" ]; then
-              echo ">>> 检测任务已收割，切换至后台运行。"
-              break
-            fi
-          done
+            ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
+          
+          echo ">>> [流程] 检测阶段已跳出，进入下一步推送。"
 
       - name: 4. 开启隧道并挂机
         run: |
