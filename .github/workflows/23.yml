@@ -20,26 +20,44 @@ jobs:
           git config --global user.name "GitHub Action"
           echo "✅ 基础环境准备就绪"
 
-      - name: 3. 启动集成镜像 (宿主机网络模式)
+      - name: 3. 强力启动服务 (指定启动路径)
         run: |
-          echo "🚀 正在启动 Sub-Store 检测集成镜像..."
-          # 使用 --network host 彻底解决 502 网络隔离问题
+          # 1. 赋予挂载目录最高权限，防止权限拒绝导致启动失败
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          sudo chmod -R 777 ${{ github.workspace }}/temp_config
+
+          echo "🚀 启动集成容器..."
+          # 放弃 --network host，改用显式端口映射，这样更易排查
           docker run --name checker -d \
-            --network host \
+            -p 8299:8299 -p 8199:8199 \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-      - name: 4. 暴力诊断：为什么端口没响应？
+          # 2. 如果容器启动后秒退，这里会显示原因
+          sleep 10
+          echo "--- 容器当前状态 ---"
+          docker ps -a
+          
+          echo "--- 容器实时日志 ---"
+          docker logs checker || echo "无法获取日志"
+
+      - name: 4. 再次检查端口 (带保底逻辑)
         run: |
-          echo "⏳ 正在探测 Web 服务..."
-          for i in {1..20}; do
-            if curl -s http://localhost:8299 > /dev/null; then
+          echo "🔍 扫描监听端口..."
+          # 检查容器内部是否真的在运行服务
+          for i in {1..15}; do
+            if curl -s http://localhost:8299 > /dev/null || curl -s http://localhost:8199 > /dev/null; then
               echo "✅ 服务已上线！"
               exit 0
             fi
-            sleep 3
+            echo "正在探测端口... ($i/15)"
+            sleep 4
           done
+          
+          echo "❌ 依旧无法连接。尝试列出容器内进程："
+          docker exec checker ps aux || echo "无法进入容器"
+          exit 1
 
           echo "❌ 探测失败！输出所有诊断信息："
           echo "--- 容器状态 ---"
