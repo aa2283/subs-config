@@ -1,4 +1,4 @@
-name: Sub-Store Integrated Sync-122成功-带配置备份
+name: Sub-Store Integrated Sync-123成功-带配置备份
 on:
   workflow_dispatch:
 
