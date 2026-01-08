@@ -1,4 +1,4 @@
-name: Sub-Store One-Time Check 25
+name: Sub-Store Perfect Sync
 on:
   workflow_dispatch:
 
@@ -12,58 +12,58 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 准备环境与隧道
+      - name: 2. 准备目录与隧道
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
-          
-          # 启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
 
-      - name: 3. 执行单次检测 (实时显示过程)
+      - name: 3. 启动容器与实时监控 (解决缓存与挂机问题)
         run: |
-          echo "🚀 启动容器并开始检测..."
-          
-          # 启动容器 (后台运行)
+          # 1. 启动容器
           docker run --name sub-backend -d \
             -p 8299:8299 \
             -v ${{ github.workspace }}/config/config.yaml:/app/config/config.yaml \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          # 等待域名分配
           sleep 10
           API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
           echo -e "\n------------------------------------------------"
           echo "🌐 官方前端: https://sub-store.vercel.app?api=$API_URL"
           echo -e "------------------------------------------------\n"
 
-          # 【核心逻辑】实时追踪日志，直到发现“检测完成”
-          docker logs -f sub-backend | while read line; do
-            echo "$line" # 输出到控制台让你看进度
-            if [[ "$line" == *"检测完成"* ]]; then
-              echo "🎯 捕获到完成信号，准备收工！"
-              # 杀掉容器，这会打破 docker logs -f 的阻塞，进入下一步
-              docker stop sub-backend
-              break
-            fi
-          done
+          # 2. 【核心优化】直接前台显示日志，不经过管道，解决“突然弹出”的问题
+          # 同时在后台跑一个“同步哨兵”
+          (
+            LAST_MARK=""
+            while true; do
+              sleep 10
+              if docker logs sub-backend 2>&1 | grep -q "检测完成"; then
+                echo "🎯 哨兵：检测已完成，正在后台同步仓库..."
+                if [ -s "output/all.yaml" ]; then
+                  cp -f output/all.yaml ./all.yaml
+                  git config --global user.email "bot@github.com"
+                  git config --global user.name "AutoBot"
+                  git add all.yaml
+                  git commit -m "Auto Update: $(date +'%Y-%m-%d %H:%M')" || true
+                  git push origin HEAD:${{ github.ref_name }}
+                  echo "✅ 哨兵：同步成功！"
+                fi
+                break # 哨兵任务完成，退出循环
+              fi
+            done
+          ) &
 
-      - name: 4. 同步结果并彻底关闭
-        run: |
-          echo "📦 正在将检测到的 49 个节点存入仓库..."
+          # 3. 【解决显示问题】前台直接看日志，不使用 read line 拦截
+          # 这会让进度条 1%, 2% 实时跳动，而不是最后才弹出
+          docker logs -f sub-backend &
           
-          if [ -s "output/all.yaml" ]; then
-            cp -f output/all.yaml ./all.yaml
-            git config --global user.email "bot@github.com"
-            git config --global user.name "AutoBot"
-            git add all.yaml
-            git commit -m "🚀 自动更新节点: $(date +'%Y-%m-%d %H:%M')" || exit 0
-            git push origin HEAD:${{ github.ref_name }}
-            echo "✅ all.yaml 同步成功！"
-          else
-            echo "❌ 未发现 output/all.yaml，检测可能失败。"
-            exit 1
-          fi
+          # 4. 【挂机锁】让任务持续运行 60 分钟，确保隧道不掉
+          for i in {60..1}; do
+            if ! docker ps | grep -q 'sub-backend'; then break; fi
+            echo "⏳ 隧道挂机中... 剩余 $i 分钟 (进度会在上方实时显示)"
+            sleep 60
+          done
