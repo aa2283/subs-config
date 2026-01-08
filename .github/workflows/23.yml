@@ -30,21 +30,24 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-      - name: 4. 端口预热探测 (解决 502 核心步骤)
+      - name: 4. 暴力诊断：为什么端口没响应？
         run: |
-          echo "⏳ 正在探测 Web 服务启动状态..."
-          # 循环探测 8199 和 8299，直到服务有响应才进入下一步
-          for i in {1..40}; do
-            if curl -s http://localhost:8299 > /dev/null || curl -s http://localhost:8199 > /dev/null; then
+          echo "⏳ 正在探测 Web 服务..."
+          for i in {1..20}; do
+            if curl -s http://localhost:8299 > /dev/null; then
               echo "✅ 服务已上线！"
-              docker ps
               exit 0
             fi
-            echo "等待服务响应中... ($i/40)"
             sleep 3
           done
-          echo "❌ 服务启动超时，请检查容器日志："
+
+          echo "❌ 探测失败！输出所有诊断信息："
+          echo "--- 容器状态 ---"
+          docker ps -a
+          echo "--- 容器实时日志 (关键) ---"
           docker logs checker
+          echo "--- 宿主机端口占用情况 ---"
+          sudo netstat -tunlp
           exit 1
 
       - name: 5. 开启双隧道与自动收割哨兵
