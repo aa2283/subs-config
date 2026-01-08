@@ -1,4 +1,4 @@
-name: Sub-Store Fixed Integration
+name: Sub-Store Integration Final
 on:
   workflow_dispatch:
 
@@ -6,67 +6,88 @@ jobs:
   run-service:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 准备宿主机环境
-        run: |
-          # 创建配置目录
-          mkdir -p ${{ github.workspace }}/temp_config
-          mkdir -p ${{ github.workspace }}/output
-          
-          # 直接在宿主机生成“完美”配置文件
-          # 确保端口和面板开关全部正确
-          cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
-          server:
-            port: 8199
-            addr: 0.0.0.0
-            web-control: true
-          EOF
-          
-          # 给予最高权限，确保 Docker 里的程序能读到它
-          sudo chmod -R 777 ${{ github.workspace }}/temp_config
-          sudo chmod -R 777 ${{ github.workspace }}/output
-          echo "✅ 宿主机配置准备完毕"
+      - name: 1. 检出仓库代码
+        uses: actions/checkout@v4
 
-      - name: 2. 强力启动容器
+      - name: 2. 准备与检查路径
         run: |
-          echo "🚀 挂载配置并启动容器..."
-          # 将准备好的 config.yaml 挂载到容器期望的两个可能路径
-          # 同时映射 8199 和 8299
+          # 确保输出目录存在
+          mkdir -p ${{ github.workspace }}/output
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          
+          # 检查你的仓库文件是否存在
+          if [ -f "${{ github.workspace }}/config/config.yaml" ]; then
+            echo "✅ 发现仓库配置文件: ${{ github.workspace }}/config/config.yaml"
+            # 强行给仓库里的配置文件加权，防止容器读不到
+            sudo chmod 644 ${{ github.workspace }}/config/config.yaml
+          else
+            echo "❌ 错误：仓库中未找到 config/config.yaml"
+            exit 1
+          fi
+
+      - name: 3. 启动容器 (精确挂载仓库文件)
+        run: |
+          echo "🚀 正在启动容器，挂载仓库配置..."
+          # 将你仓库的 config/config.yaml 挂载到容器内程序寻找的位置
+          # 我们同时挂载到 /app/config/ 和 /app/ 以防万一
           docker run --name checker -d \
             -p 8199:8199 -p 8299:8299 \
-            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
-            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config.yaml \
+            -v ${{ github.workspace }}/config/config.yaml:/app/config/config.yaml \
+            -v ${{ github.workspace }}/config/config.yaml:/app/config.yaml \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
-
-          # 给程序一点时间读取文件
+          
           sleep 15
-
-          # 如果还是退出了，打印最后报错日志
-          echo "📋 容器运行状态查看："
-          docker ps -a
-          echo "📋 容器最后日志内容："
+          echo "📋 容器启动日志诊断："
           docker logs checker
 
-      - name: 3. 申请隧道
+      - name: 4. 建立双路隧道
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          echo "🌐 正在建立 Cloudflare 隧道..."
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel.log > /dev/null 2>&1 &
+          # 申请隧道
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           
           sleep 15
-          URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+          URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
 
           echo "------------------------------------------------"
-          if [ -n "$URL" ]; then
-            echo "✅ 访问地址: $URL/admin"
-          else
-            echo "❌ 隧道申请失败，请检查上方容器日志"
-          fi
+          echo "✅ 配置已挂载！请访问："
+          echo "🌐 端口 8199 (面板): $URL_8199/admin"
+          echo "🌐 端口 8299 (核心): $URL_8299"
           echo "------------------------------------------------"
 
+      - name: 5. 哨兵自动同步
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          (
+            LAST_MARK=""
+            while true; do
+              sleep 20
+              if ! docker ps | grep -q 'checker'; then break; fi
+              CUR_MARK=$(docker logs checker 2>&1 | grep "检测完成" | tail -n 1)
+              
+              if [ -n "$CUR_MARK" ] && [ "$CUR_MARK" != "$LAST_MARK" ]; then
+                echo "🎯 捕获存盘信号，同步中..."
+                LAST_MARK="$CUR_MARK"
+                if [ -s "output/all.yaml" ]; then
+                  cp -f output/all.yaml ./all.yaml
+                  git config --global user.email "action@github.com"
+                  git config --global user.name "GitHub Action"
+                  git add all.yaml
+                  git commit -m "Auto Update Nodes" || true
+                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
+                  echo "✅ 仓库同步圆满完成"
+                fi
+              fi
+            done
+          ) &
+          
           for i in {15..1}; do
-            echo "⏳ 隧道有效时间剩余: $i 分钟..."
+            echo "⏳ 存活倒计时: $i 分钟..."
             sleep 60
           done
