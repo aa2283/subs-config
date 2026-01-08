@@ -84,8 +84,17 @@ jobs:
             echo "⚠️ 未发现有效输出文件，跳过同步。"
           fi
 
-      - name: 5. 挂机锁定 (30 分钟)
+      - name: 5. 挂机锁定 (复活 API 服务)
         run: |
-          echo "🔗 前端地址: https://sub-store.vercel.app?api=${{ env.TUNNEL_URL }}"
-          echo "⏳ 同步已完成，隧道将继续保持 30 分钟。如果不需要，请手动停止任务。"
+          # 重新启动容器，但不跑检测，只提供后端 API
+          # 这样 8299 端口重新监听，隧道就通了
+          docker run --name checker -d -p 8299:8299 \
+            -v ${{ github.workspace }}/config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master
+          
+          echo "✅ 节点已同步回仓库，后端已重新就绪！"
+          echo "🌐 官方前端: https://sub-store.vercel.app?api=${{ env.TUNNEL_URL }}"
+          
+          # 保持挂机，直到你手动停止
           sleep 1800
