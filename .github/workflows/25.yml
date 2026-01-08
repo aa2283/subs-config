@@ -1,4 +1,4 @@
-name: Sub-Store Integrated Sync
+name: Sub-Store Integrated Sync-25
 on:
   workflow_dispatch:
 
