@@ -41,10 +41,7 @@ jobs:
               f.writelines(new_lines)
           "
 
-          # 启动容器：分配 4GB 内存应对 9000 节点
-          docker run -d --name checker \
-
-            - name: 6.
+          
         
 
           # 2. 【核心修改】哨兵：现在同时监听“保存成功”和“节点为空”
