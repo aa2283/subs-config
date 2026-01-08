@@ -28,13 +28,15 @@ jobs:
             -v ${{ github.workspace }}/output:/app/output \
             -p 8299:8299 -p 8199:8199 ghcr.io/aa2283/subs-check:master
 
-           # 1. 强制激活后端 API 状态
-            timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
-            curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
-            sleep 2 
+            
 
           echo "🔍 正在扫描容器实际监听的端口..."
           sleep 15
+
+          # 1. 强制激活后端 API 状态
+            timeout 60s bash -c 'until curl -s http://127.0.0.1:8299 > /dev/null; do sleep 2; done'
+            curl -s -o /dev/null "https://sub-store.vercel.app/?api=http://127.0.0.1:8299"
+            sleep 2
           
           # 自动获取容器正在监听的端口 (排除掉常见的系统端口)
           REAL_PORT=$(sudo netstat -tunlp | grep -oP '(?<=0.0.0.0:)[0-9]+|(?<=:::)[0-9]+' | grep -vE '22|53|111' | head -n 1 || echo "8299")
