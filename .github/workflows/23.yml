@@ -1,22 +1,20 @@
 name: Sub-Store Multi-Tunnel Service
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch:
 
 jobs:
   launch:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出仓库代码
+      - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 初始化目录与权限
+      - name: 2. 彻底初始化配置 (强制开启 Web)
         run: |
-          # 创建挂载所需的目录
           mkdir -p ${{ github.workspace }}/temp_config
           mkdir -p ${{ github.workspace }}/output
           
-          # 3. 【核心修复】预置 config.yaml 以激活 Web 面板
-          # 这一步解决了你之前看到的 "Web控制面板已禁用" 问题
+          # 创建配置文件，确保 web-control 为 true
           cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
           server:
             port: 8199
@@ -24,69 +22,53 @@ jobs:
             web-control: true
           EOF
           
-          # 赋予最高读写权限，防止容器因权限问题无法启动
           sudo chmod -R 777 ${{ github.workspace }}/temp_config
           sudo chmod -R 777 ${{ github.workspace }}/output
-          echo "✅ 目录与基础配置已准备就绪"
 
-      - name: 3. 启动 Sub-Store 集成容器
+      - name: 3. 启动容器 (带环境变量双重保险)
         run: |
-          echo "🚀 正在启动容器 (宿主机网络模式)..."
-          # 使用 --network host 确保端口映射无损且 cloudflared 可直接穿透
+          # 有些镜像支持通过环境变量开启 Web，这里加上作为双重保险
           docker run --name checker -d \
             --network host \
+            -e "SUB_STORE_FRONTEND=true" \
+            -e "WEB_CONTROL=true" \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
           
-          echo "⏳ 等待服务初始化..."
-          sleep 10
+          echo "⏳ 等待服务完全预热..."
+          sleep 15
+          docker logs checker | grep "Web控制面板" || echo "⚠️ 警告：日志中未发现面板启动字样"
 
-      - name: 4. 端口捕捉与隧道申请
+      - name: 4. 申请隧道并捕捉 404 故障
         run: |
-          # 安装 Cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          echo "🔍 正在捕捉端口响应并申请隧道..."
-          # 同时为 8199 和 8299 申请隧道，解决 404 路径不明的问题
-          nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
-          nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          echo "🌐 正在建立双端口映射..."
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           
-          # 等待隧道连接建立并获取 URL
-          for i in {1..10}; do
-            sleep 3
-            URL_A=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1 || echo "")
-            URL_B=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1 || echo "")
-            if [ -n "$URL_A" ] || [ -n "$URL_B" ]; then break; fi
-            echo "隧道申请中... ($i/10)"
-          done
+          sleep 15
+          URL_A=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+          URL_B=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
 
           echo "------------------------------------------------"
           if [ -n "$URL_A" ]; then
-            echo "🌐 隧道 A (端口 8199):"
-            echo "👉 管理后台: $URL_A/admin"
-            echo "👉 根路径:   $URL_A/"
+            echo "🚀 方案 A (8199):"
+            echo "尝试 1 (最推荐): $URL_A/admin"
+            echo "尝试 2 (根路径): $URL_A/"
           fi
           echo "----------------"
           if [ -n "$URL_B" ]; then
-            echo "🌐 隧道 B (端口 8299):"
-            echo "👉 管理后台: $URL_B/admin"
-            echo "👉 根路径:   $URL_B/"
+            echo "🚀 方案 B (8299):"
+            echo "尝试 1 (最推荐): $URL_B/admin"
+            echo "尝试 2 (根路径): $URL_B/"
           fi
           echo "------------------------------------------------"
           
-          # 打印容器日志，如果还是 404，可以在这里看到服务报什么错
-          echo "📋 容器运行状态诊断 (最后 15 行):"
-          docker logs --tail 15 checker
-
-      - name: 5. 挂机保留模式 (15 分钟)
-        run: |
-          echo "⏰ 隧道已开启。请在浏览器访问上方生成的地址。"
-          echo "💡 注意：如果一个链接 404，请尝试另一个端口的 /admin 路径。"
+          # 挂机保活
           for i in {15..1}; do
-            echo "⏳ 隧道有效时间剩余: $i 分钟..."
+            echo "⏳ 存活倒计时: $i 分钟 (如遇 404 请检查 URL 结尾是否带 /admin)"
             sleep 60
           done
-          echo "🔔 挂机结束，正在关闭容器与隧道。"
-          docker kill checker || true
