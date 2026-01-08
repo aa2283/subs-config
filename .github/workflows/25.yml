@@ -61,8 +61,8 @@ jobs:
           # 这会让进度条 1%, 2% 实时跳动，而不是最后才弹出
           docker logs -f sub-backend &
           
-          # 4. 【挂机锁】让任务持续运行 60 分钟，确保隧道不掉
-          for i in {60..1}; do
+          # 4. 【挂机锁】让任务持续运行 15 分钟，确保隧道不掉
+          for i in {15..1}; do
             if ! docker ps | grep -q 'sub-backend'; then break; fi
             echo "⏳ 隧道挂机中... 剩余 $i 分钟 (进度会在上方实时显示)"
             sleep 60
