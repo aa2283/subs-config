@@ -1,0 +1,67 @@
+name: Sub-Store Direct UI Sync 25
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 2. 环境准备
+        run: |
+          mkdir -p ${{ github.workspace }}/output
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          
+          # 提前下载并启动隧道，不干扰主流程
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
+
+      - name: 3. 启动并直接显示检测进度 (核心修改)
+        run: |
+          echo "🚀 正在启动容器，即将开始实时检测..."
+          
+          # 不加 -d，直接前台运行，进度条会立即弹出
+          # 这样你在 GitHub Action 界面点开这一步就能看到进度 0% -> 100%
+          docker run --name sub-backend \
+            -p 8299:8299 \
+            -v ${{ github.workspace }}/config/config.yaml:/app/config/config.yaml \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master &
+          
+          # 等待几秒让隧道分配域名
+          sleep 10
+          API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+          
+          echo ""
+          echo "------------------------------------------------"
+          echo "🔗 官方前端连接 (检测过程中也可点击):"
+          echo "https://sub-store.vercel.app?api=$API_URL"
+          echo "------------------------------------------------"
+          echo ""
+          
+          # 关键：接管容器日志并持续输出，直到检测完成
+          docker logs -f sub-backend
+
+      - name: 4. 检测完成后的同步与挂机
+        run: |
+          echo "🎯 捕获到容器运行结束或检测完成，开始同步仓库..."
+          
+          if [ -s "output/all.yaml" ]; then
+            cp -f output/all.yaml ./all.yaml
+            git config --global user.email "bot@github.com"
+            git config --global user.name "AutoBot"
+            git add all.yaml
+            git commit -m "Auto Update Nodes: $(date +'%Y-%m-%d %H:%M')" || true
+            git push origin HEAD:${{ github.ref_name }}
+            echo "✅ 结果已同步回仓库！"
+          fi
+
+          # 保持隧道开启一段时间，方便你点击上面的链接进行手动操作
+          echo "⏳ 隧道将保持 30 分钟供你手动调试..."
+          sleep 1800
