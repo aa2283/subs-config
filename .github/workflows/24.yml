@@ -1,81 +1,77 @@
-name: Sub-Store Integration Final 24
+name: Sub-Store 8299 Fixed
 on:
   workflow_dispatch:
+
+# 必须声明此权限，否则 Git Push 会报 403
+permissions:
+  contents: write
 
 jobs:
   run-service:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出仓库代码
+      - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 2. 准备与检查路径
+      - name: 2. 准备目录
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
-          if [ -f "${{ github.workspace }}/config/config.yaml" ]; then
-            echo "✅ 发现仓库配置文件: ${{ github.workspace }}/config/config.yaml"
-            sudo chmod 644 ${{ github.workspace }}/config/config.yaml
-          else
-            echo "❌ 错误：仓库中未找到 config/config.yaml"
-            exit 1
-          fi
 
-      - name: 3. 启动容器 (精确挂载)
+      - name: 3. 启动容器 (8299 为主)
         run: |
-          echo "🚀 正在启动容器..."
           docker run --name checker -d \
-            -p 8199:8199 -p 8299:8299 \
+            -p 8299:8299 \
             -v ${{ github.workspace }}/config/config.yaml:/app/config/config.yaml \
-            -v ${{ github.workspace }}/config/config.yaml:/app/config.yaml \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-      - name: 4. 建立双路隧道
+      - name: 4. 建立 8299 隧道
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
+          
+          # 仅为 8299 开启隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          
           sleep 10
-          URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+          URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
+
           echo "------------------------------------------------"
-          echo "🌐 管理面板: $URL_8199/admin"
+          echo "✅ Sub-Store 核心服务隧道已开通："
+          echo "🌐 订阅访问地址: $URL_8299/sub/ACL4SSR_Online_Full.yaml"
           echo "------------------------------------------------"
 
-      - name: 5. 实时检测进度与哨兵同步
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+      - name: 5. 实时检测与自动推送
         run: |
-          # 【核心改进】启动实时日志观察者
-          # 它会把容器里的检测进度直接打印到 Action 的当前窗口
-          echo "📡 正在同步容器检测进度..."
+          # 实时把容器内的测速进度刷到 Action 控制台
           docker logs -f checker & 
 
           LAST_MARK=""
-          # 循环监控
+          # 监控检测状态
           for i in {30..1}; do
-            if ! docker ps | grep -q 'checker'; then 
-              echo "❌ 容器已停止"
-              break
-            fi
+            if ! docker ps | grep -q 'checker'; then break; fi
             
-            # 检查是否完成
+            # 匹配检测完成的标志
             CUR_MARK=$(docker logs checker 2>&1 | grep "检测完成" | tail -n 1)
+            
             if [ -n "$CUR_MARK" ] && [ "$CUR_MARK" != "$LAST_MARK" ]; then
-              echo "🎯 捕获存盘信号，同步中..."
+              echo "🎯 检测已完成，正在同步结果到仓库..."
               LAST_MARK="$CUR_MARK"
-              if [ -s "${{ github.workspace }}/output/all.yaml" ]; then
-                cp -f ${{ github.workspace }}/output/all.yaml ./all.yaml
-                git config --global user.email "action@github.com"
-                git config --global user.name "GitHub Action"
+              
+              if [ -s "output/all.yaml" ]; then
+                cp -f output/all.yaml ./all.yaml
+                
+                # Git 推送配置
+                git config --global user.email "github-actions[bot]@users.noreply.github.com"
+                git config --global user.name "github-actions[bot]"
                 git add all.yaml
-                git commit -m "Auto Update Nodes" || true
-                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main
-                echo "✅ 仓库同步圆满完成！可以手动停止任务了。"
+                git commit -m "Auto Update: $(date +'%Y-%m-%d %H:%M')" || exit 0
+                git push origin HEAD:${{ github.ref_name }}
+                echo "✅ all.yaml 已更新并推送到仓库！"
+                # 成功后可以选择结束任务
+                exit 0
               fi
             fi
-            
-            echo "⏳ 存活监控中 ($i/30 分钟)..."
-            sleep 60
+            sleep 30
           done
