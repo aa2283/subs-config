@@ -1,4 +1,4 @@
-name: Sub-Store 8299 Permanent Tunnel
+name: Sub-Store Official UI Sync
 on:
   workflow_dispatch:
 
@@ -9,7 +9,7 @@ jobs:
   run-service:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 检出代码
+      - name: 1. 检出仓库代码
         uses: actions/checkout@v4
 
       - name: 2. 准备目录
@@ -17,66 +17,61 @@ jobs:
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
 
-      - name: 3. 启动容器
+      - name: 3. 启动后端容器 (8299)
         run: |
-          docker run --name checker -d \
+          # 启动容器，只映射 8299 后端端口
+          docker run --name sub-backend -d \
             -p 8299:8299 \
             -v ${{ github.workspace }}/config/config.yaml:/app/config/config.yaml \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-      - name: 4. 建立 8299 永久隧道
+          sleep 5
+          docker logs sub-backend
+
+      - name: 4. 开启 API 隧道并生成前端链接
         run: |
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # 开启隧道并记录日志
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          # 建立 8299 隧道
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
           
-          sleep 10
-          URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
+          sleep 15
+          API_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
 
           echo "------------------------------------------------"
-          echo "✅ 隧道已锁定，访问地址："
-          echo "🌐 订阅: $URL_8299"
+          echo "✅ 后端 API 隧道已就绪！"
+          echo "🌐 官方前端连接地址 (点击即可进入):"
+          echo "https://sub-store.vercel.app?api=$API_URL"
           echo "------------------------------------------------"
 
-      - name: 5. 实时检测、同步并持续挂机
+      - name: 5. 实时同步与持续挂机
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
-          # 1. 启动实时日志流
-          docker logs -f checker & 
+          # 持续打印后端日志
+          docker logs -f sub-backend & 
 
           LAST_MARK=""
-          # 2. 进入长循环 (比如设置 60 分钟)
+          # 挂机 60 分钟，确保你在网页上操作时后端一直在线
           for i in {60..1}; do
-            # 检查容器状态
-            if ! docker ps | grep -q 'checker'; then 
-              echo "⚠️ 容器意外停止，尝试查看原因..."
-              docker logs checker --tail 20
-              break
-            fi
+            if ! docker ps | grep -q 'sub-backend'; then break; fi
             
-            # 检测是否完成
-            CUR_MARK=$(docker logs checker 2>&1 | grep "保存本地成功" | tail -n 1)
-            
-            # 如果保存本地成功且尚未同步，则执行同步
+            # 自动捕获检测完成信号并同步仓库
+            CUR_MARK=$(docker logs sub-backend 2>&1 | grep "检测完成" | tail -n 1)
             if [ -n "$CUR_MARK" ] && [ "$CUR_MARK" != "$LAST_MARK" ]; then
-              echo "🎯 保存本地成功信号捕捉成功，开始后台同步..."
+              echo "🎯 检测完成，正在同步结果到 GitHub..."
               LAST_MARK="$CUR_MARK"
-              
               if [ -s "output/all.yaml" ]; then
                 cp -f output/all.yaml ./all.yaml
-                git config --global user.email "github-actions[bot]@users.noreply.github.com"
-                git config --global user.name "github-actions[bot]"
+                git config --global user.email "bot@github.com"
+                git config --global user.name "AutoBot"
                 git add all.yaml
-                git commit -m "Auto Update: $(date +'%Y-%m-%d %H:%M')" || echo "No changes to commit"
-                git push origin HEAD:${{ github.ref_name }} && echo "✅ 仓库同步已完成，隧道继续保持..."
+                git commit -m "Auto Update Nodes" || true
+                git push origin HEAD:${{ github.ref_name }}
+                echo "✅ all.yaml 已同步回仓库！"
               fi
-            fi
-
-            # 每分钟打印一次心跳，防止 Action 因为无输出被关闭
-            if [ $((i % 5)) -eq 0 ]; then
-              echo "⏳ 隧道及挂机锁存活中... 剩余 $i 分钟"
             fi
             sleep 60
           done
