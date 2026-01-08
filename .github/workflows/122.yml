@@ -101,22 +101,21 @@ jobs:
             echo "⚠️ 未发现有效输出文件，跳过同步。"
           fi
 
-      - name: 5. 挂机锁定 (维持隧道存活)
+      - name: 5. 挂机锁定 (15分钟倒计时)
         run: |
-          echo "------------------------------------------------"
-          echo "🎯 检测任务已完成，节点已同步至仓库！"
-          echo "🌐 官方前端: https://sub-store.vercel.app?api=${{ env.TUNNEL_URL }}"
-          echo "------------------------------------------------"
-          
-          # 检查容器状态，确保后端还在跑
-          if docker ps | grep -q 'checker'; then
-            echo "✅ 后端容器 (checker) 运行中，API 端口 8299 正常。"
-          else
-            echo "⚠️ 警告：后端容器已退出，隧道链接可能无法使用。"
-          fi
+          # 1. 复活 API 服务 (静默模式)
+          docker rm -f checker >/dev/null 2>&1 || true
+          docker run --name checker -d -p 8299:8299 \
+            -v ${{ github.workspace }}/config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master >/dev/null
 
-          echo "⏳ 系统进入 30 分钟挂机保护模式..."
-          echo "💡 如需提前结束，请在 GitHub Actions 页面点击 'Cancel workflow'。"
           
-          # 前台阻塞 30 分钟，保持虚拟机不销毁
-          sleep 1800
+
+          # 2. 纯净倒计时
+          for i in {15..1}; do
+            echo "⏳ 距离隧道自动关闭还剩: $i 分钟"
+            sleep 60
+          done
+
+          echo "⌛ 挂机结束，正在清理现场..."
