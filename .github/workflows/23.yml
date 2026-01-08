@@ -1,57 +1,10 @@
-name: Sub-Store Integration Check & Sync 23
-on:
-  workflow_dispatch:
-
-jobs:
-  run-service:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 1. 检出代码
-        uses: actions/checkout@v4
-
-      - name: 2. 准备目录与 Git 环境
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+- name: 启动容器与双隧道映射
         run: |
-          mkdir -p output temp_config
-          # 静默准备私有库，用于后续双路同步
-          git clone --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" target-repo-sync || true
-          git config --global user.email "actions@github.com"
-          git config --global user.name "GitHub Action"
-          echo "✅ 基础环境准备就绪"
-
-      - name: 3. 强力启动服务 (完整配置版)
-        run: |
+          # 1. 准备环境
           mkdir -p ${{ github.workspace }}/temp_config
           mkdir -p ${{ github.workspace }}/output
           
-          # 【关键】预置正确的 config.yaml 开启 Web 面板
-          cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
-          server:
-            port: 8199
-            addr: 0.0.0.0
-            web-control: true  # 显式开启面板
-          # 这里可以根据需要添加你的订阅链接，或者空着去网页端填
-          EOF
-
-          sudo chmod -R 777 ${{ github.workspace }}/temp_config
-          sudo chmod -R 777 ${{ github.workspace }}/output
-
-          echo "🚀 启动集成容器..."
-          docker run --name checker -d \
-            --network host \
-            -v ${{ github.workspace }}/temp_config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master
-
-          sleep 10
-
-      - name: 6. 启动集成服务与防重触发哨兵
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          # 1. 预置配置 (开启 Web 面板)
-          mkdir -p ${{ github.workspace }}/temp_config
+          # 2. 预置最基础的配置文件（确保护航）
           cat <<EOF > ${{ github.workspace }}/temp_config/config.yaml
           server:
             port: 8199
@@ -59,156 +12,60 @@ jobs:
             web-control: true
           EOF
           
-          # 2. 启动容器
+          sudo chmod -R 777 ${{ github.workspace }}/temp_config
+          sudo chmod -R 777 ${{ github.workspace }}/output
+
+          # 3. 启动容器 (使用 host 模式确保 cloudflared 能穿透)
+          echo "🚀 正在启动集成镜像..."
           docker run --name checker -d \
             --network host \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          # 3. 哨兵逻辑 (防刷同步版)
-          (
-            echo "🏹 哨兵已进入潜伏状态..."
-            LAST_MARK=""
-            while true; do
-              sleep 20
-              if ! docker ps | grep -q 'checker'; then break; fi
-              
-              # 获取包含关键字的最后一行日志作为标记
-              CUR_MARK=$(docker logs checker 2>&1 | grep -E "保存本地成功|存盘成功|检测完成" | tail -n 1)
-              
-              if [ -n "$CUR_MARK" ] && [ "$CUR_MARK" != "$LAST_MARK" ]; then
-                echo "🎯 [哨兵] 捕获新信号，同步仓库..."
-                LAST_MARK="$CUR_MARK"
-                
-                if [ -s "output/all.yaml" ]; then
-                  sudo chmod -R 755 output/ 2>/dev/null || true
-                  cp -f output/all.yaml ./all.yaml
-                  git add all.yaml
-                  git commit -m "Auto Update" >/dev/null 2>&1 || true
-                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
-                  echo "✅ 同步完成。"
-                fi
-              fi
-            done
-          ) &
-
-          # 4. 开启隧道
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
-          chmod +x cloudflared
-          nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel.log > /dev/null 2>&1 &
-          
-          sleep 12
-          URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
-          echo "------------------------------------------------"
-          echo "👉 管理后台: $URL/admin"
-          echo "👉 备用路径: $URL/"
-          echo "------------------------------------------------"
-
-          for i in {15..1}; do
-            echo "⏳ 隧道存活中: $i 分钟..."
-            sleep 60
+          # 4. 端口捕捉 (等待直到 8199 或 8299 真正响应)
+          echo "🔍 正在捕捉端口响应状态..."
+          for i in {1..30}; do
+            if curl -s http://localhost:8199 > /dev/null || curl -s http://localhost:8299 > /dev/null; then
+              echo "✅ 服务已发现！"
+              break
+            fi
+            echo "捕捉中... ($i/30)"
+            sleep 3
           done
 
-          # 挂机倒计时
-          for i in {15..1}; do
-            echo "⏳ 存活倒计时: $i 分钟..."
-            sleep 60
-          done
-
-      - name: 5. 开启双隧道与自动收割哨兵
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          set +x
-          # 安装 cloudflared
+          # 5. 申请双隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          echo "🌐 正在建立 Cloudflare 隧道..."
-          nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          echo "🌐 正在申请 Cloudflare 隧道..."
           nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           
+          # 给点时间让隧道握手
           sleep 12
-          URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
-          URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+
+          # 6. 提取并展示链接
+          LINK_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+          LINK_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
 
           echo "------------------------------------------------"
-          echo "🔗 后端接口 (8299): $URL_8299"
-          echo "🔗 前端界面 (8199): $URL_8199/admin"
+          if [ -n "$LINK_8199" ]; then
+            echo "🔗 隧道 A (8199): $LINK_8199/admin"
+            echo "🔗 备用 A (8199): $LINK_8199/"
+          fi
+          if [ -n "$LINK_8299" ]; then
+            echo "🔗 隧道 B (8299): $LINK_8299/admin"
+            echo "🔗 备用 B (8299): $LINK_8299/"
+          fi
           echo "------------------------------------------------"
-          echo "💡 提示：在网页端点检测保存，脚本将自动感应并同步仓库。"
+          
+          # 查看容器实时日志，方便你调试 404
+          echo "📋 容器当前启动日志摘要："
+          docker logs --tail 20 checker
 
-          # 【后台哨兵】实时监听日志，一旦发现保存动作，立即同步
-          # 【后台哨兵】实时收割 (带防重复触发机制)
-          (
-            echo "🏹 哨兵已进入潜伏状态，监控日志流..."
-            LAST_SYNC_MARK="" # 记录上一次同步时的最后一行日志
-            
-            while true; do
-              sleep 20
-              if ! docker ps | grep -q 'checker'; then break; fi
-              
-              # 获取最新的日志特征（取最后 1 行检测完成相关的日志）
-              CURRENT_SYNC_MARK=$(docker logs checker 2>&1 | grep -E "保存本地成功|存盘成功|检测完成" | tail -n 1)
-              
-              # 如果当前标记不为空，且与上次标记不同，则执行同步
-              if [ -n "$CURRENT_SYNC_MARK" ] && [ "$CURRENT_SYNC_MARK" != "$LAST_SYNC_MARK" ]; then
-                echo -e "\n🎯 [哨兵] 捕获到新的存盘信号，开始同步..."
-                
-                sudo chmod -R 755 output/ 2>/dev/null || true
-                
-                # 检查文件是否存在且不为空
-                if [ -s "output/all.yaml" ]; then
-                  COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
-                  
-                  # 静默同步
-                  cp -f output/all.yaml ./all.yaml 2>/dev/null || true
-                  git add all.yaml
-                  git commit -m "Auto Sync: $COUNT nodes" >/dev/null 2>&1 || true
-                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
-                  
-                  if [ -d "target-repo-sync" ]; then
-                    cd target-repo-sync
-                    mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
-                    git add .
-                    git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
-                    git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
-                    cd ..
-                  fi
-                  echo "✅ [系统] 同步圆满完成，标记当前状态防止重复。"
-                  LAST_SYNC_MARK="$CURRENT_SYNC_MARK" # 更新标记，进入冷却
-                else
-                  echo "⚠️ [哨兵] 虽有信号但 output/all.yaml 为空，跳过同步。"
-                  LAST_SYNC_MARK="$CURRENT_SYNC_MARK" # 即使为空也更新标记，避免死循环
-                fi
-              fi
-            done
-          ) &
-                
-                # A. 同步主仓库 (不泄露 Token)
-                cp -f output/all.yaml ./all.yaml 2>/dev/null || true
-                git add all.yaml
-                git commit -m "Auto Update: $COUNT nodes" >/dev/null 2>&1 || true
-                git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
-
-                # B. 同步私有仓库
-                if [ -d "target-repo-sync" ]; then
-                  cd target-repo-sync
-                  mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
-                  git add .
-                  git commit -m "Web Sync: $COUNT" >/dev/null 2>&1 || true
-                  git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
-                  cd ..
-                fi
-                echo "✅ [系统] 仓库已成功同步最新节点。"
-              fi
-            done
-          ) &
-
-          # 6. 挂机保留模式 (15分钟)
+          # 7. 挂机保活 15 分钟
           for i in {15..1}; do
             echo "⏳ 隧道存活倒计时: $i 分钟..."
             sleep 60
           done
-          echo "🔔 任务结束，正在清理资源。"
