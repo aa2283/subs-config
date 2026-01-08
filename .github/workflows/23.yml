@@ -1,63 +1,62 @@
-name: Graphic Management & Auto Sync 23
+name: Sub-Store Integration Check & Sync 23
 on:
   workflow_dispatch:
 
 jobs:
-  run-graphic:
+  run-service:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 环境与 Git 预设
+      - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 2. 准备目录与私有库
+      - name: 2. 准备目录与 Git 环境
         env:
           MY_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
           mkdir -p output temp_config
+          # 静默准备私有库，用于后续双路同步
           git clone --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" target-repo-sync || true
           git config --global user.email "actions@github.com"
           git config --global user.name "GitHub Action"
+          echo "✅ 基础环境准备就绪"
 
-      - name: 3. 启动集成镜像 (端口 8299/8199)
+      - name: 3. 启动集成镜像 (宿主机网络模式)
         run: |
-          # 启动容器，同时映射两个可能的端口
-          docker run --name checker -d \
-            -v ${{ github.workspace }}/temp_config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master
-
-      - name: 6. 启动集成镜像并开启双隧道收割
-        env:
-          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
-        run: |
-          set +x
-          git config --global user.email "actions@github.com"
-          git config --global user.name "GitHub Action"
-
-          echo "🚀 启动容器中..."
-          # 使用 --network host 确保宿主机可以直接访问 8299 和 8199
+          echo "🚀 正在启动 Sub-Store 检测集成镜像..."
+          # 使用 --network host 彻底解决 502 网络隔离问题
           docker run --name checker -d \
             --network host \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master
 
-          echo "⏳ 等待 Web 服务响应 (避免 502)..."
-          # 循环探测端口，直到 8299 或 8199 响应内容
-          for i in {1..30}; do
+      - name: 4. 端口预热探测 (解决 502 核心步骤)
+        run: |
+          echo "⏳ 正在探测 Web 服务启动状态..."
+          # 循环探测 8199 和 8299，直到服务有响应才进入下一步
+          for i in {1..40}; do
             if curl -s http://localhost:8299 > /dev/null || curl -s http://localhost:8199 > /dev/null; then
-              echo "✅ 服务已就绪！"
-              break
+              echo "✅ 服务已上线！"
+              docker ps
+              exit 0
             fi
-            echo "正在探测端口服务... (尝试 $i/30)"
+            echo "等待服务响应中... ($i/40)"
             sleep 3
           done
+          echo "❌ 服务启动超时，请检查容器日志："
+          docker logs checker
+          exit 1
 
-          # 启动双隧道
+      - name: 5. 开启双隧道与自动收割哨兵
+        env:
+          MY_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          set +x
+          # 安装 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          echo "🌐 正在建立隧道连接..."
+          echo "🌐 正在建立 Cloudflare 隧道..."
           nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           nohup ./cloudflared tunnel --url http://localhost:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
           
@@ -66,47 +65,50 @@ jobs:
           URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
 
           echo "------------------------------------------------"
-          echo "🔗 后端/集成接口 (8299): $URL_8299"
-          echo "🔗 前端管理界面 (8199): $URL_8199/admin"
+          echo "🔗 后端接口 (8299): $URL_8299"
+          echo "🔗 前端界面 (8199): $URL_8199/admin"
           echo "------------------------------------------------"
+          echo "💡 提示：在网页端点检测保存，脚本将自动感应并同步仓库。"
 
-          # 启动后台收割哨兵
+          # 【后台哨兵】实时监听日志，一旦发现保存动作，立即同步
           (
-            echo "🏹 自动收割哨兵已进入潜伏状态..."
+            echo "🏹 哨兵已进入潜伏状态，监控日志流..."
             while true; do
               sleep 15
               if ! docker ps | grep -q 'checker'; then break; fi
               
-              # 监控日志，只要检测完成并保存，立刻同步
+              # 清洗日志颜色代码并抓取关键字
               LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功"; then
-                echo "🎯 [哨兵] 捕获存盘信号，正在执行 Git 同步..."
+              
+              if echo "$LOGS" | grep -qE "保存本地成功|存盘成功|节点为空"; then
+                echo -e "\n🎯 [实时命中] 检测到存盘动作！触发静默同步..."
                 
                 sudo chmod -R 755 output/ 2>/dev/null || true
                 COUNT=$(grep -c "name:" output/all.yaml 2>/dev/null || echo "0")
                 
-                # 静默推送至主库
+                # A. 同步主仓库 (不泄露 Token)
                 cp -f output/all.yaml ./all.yaml 2>/dev/null || true
                 git add all.yaml
-                git commit -m "Manual Trigger Sync: $COUNT nodes" >/dev/null 2>&1 || true
+                git commit -m "Auto Update: $COUNT nodes" >/dev/null 2>&1 || true
                 git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/${{ github.repository }}.git" HEAD:main >/dev/null 2>&1
 
-                # 静默推送至私有库
+                # B. 同步私有仓库
                 if [ -d "target-repo-sync" ]; then
                   cd target-repo-sync
                   mkdir -p subs && cp -f ../output/all.yaml ./subs/all.yaml 2>/dev/null || true
                   git add .
-                  git commit -m "Sync: $COUNT" >/dev/null 2>&1 || true
+                  git commit -m "Web Sync: $COUNT" >/dev/null 2>&1 || true
                   git push --quiet "https://x-access-token:${MY_TOKEN}@github.com/aa2283/v2ray_configs.git" HEAD:main >/dev/null 2>&1
                   cd ..
                 fi
-                echo "✅ 数据已同步仓库。"
+                echo "✅ [系统] 仓库已成功同步最新节点。"
               fi
             done
           ) &
 
-          # 挂机保留模式
+          # 6. 挂机保留模式 (15分钟)
           for i in {15..1}; do
-            echo "⏳ 距离隧道关闭还剩: $i 分钟..."
+            echo "⏳ 隧道存活倒计时: $i 分钟..."
             sleep 60
           done
+          echo "🔔 任务结束，正在清理资源。"
