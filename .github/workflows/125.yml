@@ -1,4 +1,4 @@
-name: Sub-Store Integrated Sync-124待成功-带配置备份
+name: Sub-Store Integrated Sync-125待成功-带配置备份
 on:
   workflow_dispatch:
 
@@ -47,6 +47,15 @@ jobs:
 
       - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
+
+          # 【新增】关键步骤：在容器启动前，把仓库里的旧配置塞进挂载目录
+          echo "📂 正在预装载现有配置..."
+          [ -f "sub-store.json" ] && cp -f sub-store.json ${{ github.workspace }}/output/sub-store.json || echo "首次运行，无备份配置"
+          [ -f "all.yaml" ] && cp -f all.yaml ${{ github.workspace }}/output/all.yaml || true
+          
+          # 给予权限确保容器可写
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          
           (
             echo ">>> [哨兵] 启动成功..."
             HUNDRED_TIME=0
@@ -73,7 +82,7 @@ jobs:
             done
           ) &
 
-          echo "🚀 启动容器，进度将实时显示..."
+          echo "🚀 启动容器，挂载已包含旧配置，进度将实时显示..."
           docker run --name checker --rm -t \
             -p 8299:8299 \
             -v ${{ github.workspace }}/config:/app/config \
