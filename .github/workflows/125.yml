@@ -20,11 +20,9 @@ jobs:
           # 下载并静默启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          nohup bash -c "sleep 10 && ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log" > /dev/null 2>&1 &
-
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
           
           echo "⏳ 正在建立私密连接并同步至固定域名..."
-          
           for i in {1..30}; do
             # 1. 提取域名但不打印到日志
             TEMP_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
