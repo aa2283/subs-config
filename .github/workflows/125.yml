@@ -20,20 +20,8 @@ jobs:
           # 下载并静默启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          
-          # 1. 启动隧道，直接用 --logfile 指定日志路径
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
-          
-          # 2. 关键：循环检查日志文件是否生成，直到拿到链接为止（最多等 30 秒）
-          echo "等待隧道生成链接..."
-          for i in {1..10}; do
-            if [ -f tunnel.log ] && grep -q "trycloudflare.com" tunnel.log; then
-              echo "隧道已就绪！"
-              break
-            fi
-            echo "等待中... ($i)"
-            sleep 3
-          done
+          nohup bash -c "sleep 10 && ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log" > /dev/null 2>&1 &
+
           
           echo "⏳ 正在建立私密连接并同步至固定域名..."
           
