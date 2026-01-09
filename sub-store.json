@@ -67,7 +67,7 @@
         }
       ],
       "source": "remote",
-      "url": "https://sto.weil.de5.net/YourSharedSecret123/download/sub?target=URI",
+      "url": "http://127.0.0.1:8299/download/sub?target=URI",
       "content": "",
       "ua": "",
       "tag": [],
