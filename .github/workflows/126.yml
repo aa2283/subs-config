@@ -144,28 +144,27 @@ jobs:
             while true; do
               sleep 30
 
-              if [ -n "$CHANGES" ]; then
+              
+              # 先把容器里的最新配置同步出来
+              cp -f output/sub-store.json ./sub-store.json || true
+              cp -f output/all.yaml ./all.yaml || true
+              
+              # 检查是否有变动，如果有， porcelain 会输出内容，否则为空
+              CHANGES=$(git status --porcelain all.yaml sub-store.json)
+              
+              if [ -n "$CHANGES" ]; then  
               echo "📢 检测到网页修改，实时上传 KV..."
               curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
               -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
               --data-binary @output/sub-store.json > /dev/null
               fi
-              
-              # 先把容器里的最新配置同步出来
-              #cp -f output/sub-store.json ./sub-store.json || true
-              #cp -f output/all.yaml ./all.yaml || true
-              
-              # 检查是否有变动，如果有， porcelain 会输出内容，否则为空
-              #CHANGES=$(git status --porcelain all.yaml sub-store.json)
-              
-              #if [ -n "$CHANGES" ]; then
-                #echo "📢 [实时同步] 检测到网页端改动，正在推送..."
+                
                 #git config --global user.email "bot@github.com"
                 #git config --global user.name "AutoBot"
                 #git add all.yaml sub-store.json
                 #git commit -m "📝 网页端实时同步: $(date +'%H:%M')" && git push || true
                 echo "✅ [实时同步] 已入库。"
-              fi
+              
               # 如果没有 CHANGES，就什么都不打印，保持日志清爽
             done
           ) &
