@@ -1,8 +1,8 @@
 name: Subs-Check & Sub-Store 完美缝合版-优化版
 
 on:
-  schedule:
-    - cron: '15 4 * * *'
+  #schedule:
+    #- cron: '15 4 * * *'
   workflow_dispatch:
 
 jobs:
