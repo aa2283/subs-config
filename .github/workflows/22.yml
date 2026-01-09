@@ -2,7 +2,7 @@ name: Subs-Check & Sub-Store 终极缝合修复版
 
 on:
   schedule:
-    - cron: '15 4 * * *'
+    #- cron: '15 4 * * *'
   workflow_dispatch:
 
 jobs:
