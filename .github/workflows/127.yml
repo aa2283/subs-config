@@ -18,7 +18,6 @@ jobs:
       - name: 2. 环境与隧道准备 (安全加密版)
         run: |
           mkdir -p ${{ github.workspace }}/output
-          mkdir -p ${{ github.workspace }}/temp_config
           sudo chmod -R 777 ${{ github.workspace }}/output
 
           
