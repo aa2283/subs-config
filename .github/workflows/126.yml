@@ -23,7 +23,7 @@ jobs:
           # 下载并静默启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &  
           
           echo "⏳ 正在建立私密连接并同步至固定域名..."
           for i in {1..30}; do
@@ -157,13 +157,53 @@ jobs:
               curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
               -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
               --data-binary @output/sub-store.json > /dev/null
+              echo "✅ KV备份完成"
               fi
                 
-                #git config --global user.email "bot@github.com"
-                #git config --global user.name "AutoBot"
-                #git add all.yaml sub-store.json
-                #git commit -m "📝 网页端实时同步: $(date +'%H:%M')" && git push || true
-                echo "✅ [实时同步] 已入库。"
+              # 1. 自动从变量读取清单 (若变量不存在则抓取 zh:ClashMeta 作为备份)
+          # 你在 GitHub Variables 里修改 SUB_LIST 即可生效
+          LIST="${{ vars.SUB_LIST || 'zh:ClashMeta' }}"
+          
+          # 2. 环境初始化
+          echo "📂 正在克隆私有库: aa2283/v2ray_configs"
+          git clone https://${{ secrets.MY_PAT }}@github.com/aa2283/v2ray_configs.git backup_repo
+          mkdir -p backup_repo/sub_config/
+          
+          # 3. 进入循环：处理每一个订阅项
+          # 使用 IFS 将逗号分隔的字符串转换为数组
+          IFS=',' read -ra ITEMS <<< "$LIST"
+          for item in "${ITEMS[@]}"; do
+            # 拆分 名字 和 格式 (例如 name:type)
+            NAME="${item%%:*}"
+            TYPE="${item##*:}"
+            
+            # 自动分配后缀名
+            if [[ "$TYPE" == *"Clash"* ]]; then
+              EXT="yaml"
+            else
+              EXT="txt"
+            fi
+            
+            echo "📥 正在拉取: $NAME ($TYPE) -> $NAME.$EXT"
+            
+            # 执行下载命令 (127.0.0.1 访问容器)
+            curl -s "http://127.0.0.1:8299/download/${NAME}?target=${TYPE}" \
+                 -o "backup_repo/sub_config/${NAME}.${EXT}"
+          done
+
+          # 4. 提交回私有仓库
+          cd backup_repo
+          git config --global user.email "bot@github.com"
+          git config --global user.name "AutoBot"
+          git add sub_config/
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "🚀 检测到订阅更新，推送到私有仓库..."
+            git commit -m "🔖 自动同步: $(date +'%H:%M') [清单: $LIST]"
+            git push origin main
+          else
+            echo "✨ 订阅内容无变动，跳过推送。"
+          fi
               
               # 如果没有 CHANGES，就什么都不打印，保持日志清爽
             done
