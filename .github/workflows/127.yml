@@ -1,4 +1,4 @@
-name: Sub-Store Integrated Sync-127成功-隐藏订阅
+name: Sub-Store Integrated Sync-127成功-s隐藏订阅
 on:
   schedule:
     - cron: '15 4 * * *'
