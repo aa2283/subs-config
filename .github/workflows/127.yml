@@ -131,7 +131,7 @@ jobs:
           echo "🚀 启动容器，挂载已包含旧配置，进度将实时显示..."
           docker run --name checker --rm -t \
             -p 8299:8299 \
-            -v ${{ github.workspace }}/config:/app/config \
+            -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
 
