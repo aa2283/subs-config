@@ -166,7 +166,7 @@ jobs:
           
           # 2. 环境初始化
           echo "📂 正在克隆私有库: aa2283/v2ray_configs"
-          git clone https://${{ secrets.MY_PAT }}@github.com/aa2283/v2ray_configs.git backup_repo
+          git clone https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git backup_repo
           mkdir -p backup_repo/sub_config/
           
           # 3. 进入循环：处理每一个订阅项
