@@ -1,5 +1,5 @@
-name: Sub-Store-Integrated-Sync127
 
+name: Sub-Store Integrated Sync-126待成功-带配置备份
 on:
   schedule:
     - cron: '15 4 * * *'
@@ -15,69 +15,185 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 注入订阅地址
+      - name: 2. 环境与隧道准备 (安全加密版)
         run: |
           mkdir -p ${{ github.workspace }}/output
-          mkdir -p ${{ github.workspace }}/temp_config
+          sudo chmod -R 777 ${{ github.workspace }}/output
           
-          export GITHUB_WORKSPACE_DIR="${{ github.workspace }}"
-          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+          # 下载并静默启动隧道
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
           
-          python3 << 'EOF'
-import os
-workspace = os.environ.get('GITHUB_WORKSPACE_DIR')
-raw_data = os.environ.get('RAW_URLS_DATA', '')
-template_path = os.path.join(workspace, 'config/config.yaml')
-output_path = os.path.join(workspace, 'temp_config/config.yaml')
-urls = [u.strip() for u in raw_data.split('\n') if len(u.strip()) > 10]
-formatted = [f'  - "{u}"\n' for u in urls]
-new_lines = ['show-useless-url: true\n']
-if os.path.exists(template_path):
-    with open(template_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            if '{SUB_URLS}' in line: new_lines.extend(formatted)
-            elif 'show-useless-url' in line: continue
-            else: new_lines.append(line)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.writelines(new_lines)
-EOF
+          echo "⏳ 正在建立私密连接并同步至固定域名..."
+          for i in {1..30}; do
+            # 1. 提取域名
+            TEMP_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
+            
+            if [ -n "$TEMP_URL" ]; then
+              # 2. 同步到 CF KV
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
+                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+                   -d "$TEMP_URL" > /dev/null
+              
+              # 3. 存入 ENV
+              echo "TUNNEL_URL=$TEMP_URL" >> $GITHUB_ENV
+              
+              echo "✅ 固定域名已就绪！"
+              echo "### 🌐 访问地址已更新至固定域名" >> $GITHUB_STEP_SUMMARY
+              break
+            fi
+            sleep 1
+          done
 
-      - name: 3. 执行检测与挂机
+          if [ -z "$TEMP_URL" ]; then echo "❌ 隧道启动超时"; exit 1; fi
+
+      - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
-          # 启动容器
+
+          mkdir -p ${{ github.workspace }}/output
+          
+          echo "📥 正在从 KV 恢复配置..."
+          # 从 KV 获取数据并写入文件
+          RESPONSE=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+               -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}")
+          
+          # 简单校验：如果 KV 是空的或者报错，不覆盖本地，防止洗掉数据
+          if [ -n "$RESPONSE" ] && [[ "$RESPONSE" != *"error"* ]]; then
+            echo "$RESPONSE" > ${{ github.workspace }}/output/sub-store.json
+            echo "✅ 配置恢复成功"
+          else
+            echo "⚠️ KV 为空或读取失败，将使用初始配置"
+          fi
+          
+          sudo chmod -R 777 ${{ github.workspace }}/output
+
+          # 【新增】关键步骤：在容器启动前，把仓库里的旧配置塞进挂载目录
+          #echo "📂 正在预装载现有配置..."
+          #[ -f "sub-store.json" ] && cp -f sub-store.json ${{ github.workspace }}/output/sub-store.json || echo "首次运行，无备份配置"
+          #[ -f "all.yaml" ] && cp -f all.yaml ${{ github.workspace }}/output/all.yaml || true
+          
+          # 给予权限确保容器可写
+          #sudo chmod -R 777 ${{ github.workspace }}/output
+          
+          (
+            echo ">>> [哨兵] 启动成功..."
+            HUNDRED_TIME=0
+            while true; do
+              sleep 10
+              if ! docker ps | grep -q 'checker'; then break; fi
+              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+              
+              if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
+                echo ">>> [哨兵报告] 任务完成！执行强制收割..."
+                docker kill checker || true
+                break
+              fi
+              
+              if echo "$LOGS" | grep -q "100.0%"; then
+                HUNDRED_TIME=$((HUNDRED_TIME + 10))
+                if [ $HUNDRED_TIME -ge 120 ]; then
+                  docker kill checker || true
+                  break
+                fi
+              else
+                HUNDRED_TIME=0
+              fi
+            done
+          ) &
+
+          echo "🚀 启动容器，挂载已包含旧配置，进度将实时显示..."
+          docker run --name checker --rm -t \
+            -p 8299:8299 \
+            -v ${{ github.workspace }}/temp_config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
+
+      - name: 4. 同步结果回仓库 (节点+配置)
+        run: |
+
+          if [ -f "output/sub-store.json" ]; then
+            echo "📤 正在备份最新配置到 KV..."
+            curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+                 -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+                 --data-binary @output/sub-store.json > /dev/null
+            echo "✅ 备份完成"
+          fi
+          
+          #git config --global user.email "bot@github.com"
+          #git config --global user.name "AutoBot"
+          
+          # 同时备份 all.yaml 和 sub-store.json
+          #[ -s "output/all.yaml" ] && cp -f output/all.yaml ./all.yaml || true
+          #[ -f "output/sub-store.json" ] && cp -f output/sub-store.json ./sub-store.json || true
+          
+          #git add all.yaml sub-store.json
+          #git commit -m "🚀 自动同步 (节点+配置): $(date +'%H:%M')" || true
+          #git push origin HEAD:${{ github.ref_name }}
+
+      - name: 5. 挂机锁定 (15分钟实时同步网页修改)
+        run: |
+          # 1. 启动后端容器 (此时 output/ 文件夹里已经是开头从 KV 提取的数据)
+          docker rm -f checker >/dev/null 2>&1 || true
           docker run --name checker -d -p 8299:8299 \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master
-          
-          # 准备私有库备份 (PAT_TOKEN)
+            ghcr.io/aa2283/subs-check:master >/dev/null
+
+          # 2. 准备备份仓库 (仅作为上传目的地)
+          echo "📂 准备私有备份库..."
           rm -rf backup_repo
           git clone https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git backup_repo
           
           git config --global user.email "bot@github.com"
           git config --global user.name "AutoBot"
-          cp -f output/sub-store.json ./snapshot.json || touch ./snapshot.json
+          
+          # 建立当前状态快照 (基于开头 KV 提取的数据)
+          cp -f output/sub-store.json ./snapshot.json
 
-          # 启动异步同步哨兵
+          # 3. 【单向备份哨兵】
           (
             while true; do
               sleep 30
-              if [ -f "output/sub-store.json" ] && ! diff -q output/sub-store.json ./snapshot.json >/dev/null 2>&1; then
-                echo "📢 检测到配置变动，同步中..."
+              
+              # 只有网页点保存了 (output/ 变了)，才执行备份
+              if ! diff -q output/sub-store.json ./snapshot.json >/dev/null 2>&1; then
+                echo "📢 检测到配置更新，正在单向同步至 KV 和私有库..."
                 cp -f output/sub-store.json ./snapshot.json
-                # A. 同步到 KV
+                
+                # A. 实时覆盖 KV (保证下次运行开头提取的是最新的)
                 curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
-                  -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data-binary @output/sub-store.json > /dev/null
-                # B. 同步到私有库
+                  -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+                  --data-binary @output/sub-store.json > /dev/null
+                
+                # B. 下载最新节点文件到私有库文件夹
+                LIST="${{ vars.SUB_LIST || 'zh:ClashMeta' }}"
+                IFS=',' read -ra ITEMS <<< "$LIST"
                 mkdir -p backup_repo/sub_config/
+                for item in "${ITEMS[@]}"; do
+                  NAME="${item%%:*}"; TYPE="${item##*:}"
+                  [[ "$TYPE" == *"Clash"* ]] && EXT="yaml" || EXT="txt"
+                  curl -s "http://127.0.0.1:8299/download/${NAME}?target=${TYPE}" -o "backup_repo/sub_config/${NAME}.${EXT}"
+                done
+
+                # C. 备份配置文件 JSON 到私有库根目录 (仅备份，脚本不从这里读取)
                 cp -f output/sub-store.json backup_repo/sub_config/sub-store.json
+
+                # D. 执行推送
                 pushd backup_repo > /dev/null
-                git add . && git commit -m "🔖 备份: $(date +'%H:%M')" && git push origin main || git push origin master
+                git add .
+                if [ -n "$(git status --porcelain)" ]; then
+                  git commit -m "🔖 网页备份: $(date +'%H:%M')"
+                  git push origin main || git push origin master
+                  echo "✅ 私有库单向备份成功"
+                fi
                 popd > /dev/null
               fi
             done
           ) &
 
-          # 挂机 15 分钟
-          for i in {15..1}; do echo "⏳ 剩余 $i 分钟"; sleep 60; done
+          # 4. 保持运行
+          for i in {15..1}; do
+            echo "⏳ 哨兵守护中... 剩余 $i 分钟"
+            sleep 60
+          done
