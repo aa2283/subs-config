@@ -66,18 +66,33 @@ jobs:
           fi
 
           # --- 修复后的 Python 注入逻辑 ---
+          # --- 彻底修复后的 Python 注入逻辑 ---
+          # 1. 先把 GitHub 变量转为 Shell 环境变量
+          export GITHUB_WORKSPACE_DIR="${{ github.workspace }}"
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+
+          # 2. 使用 EOF 模式，注意 'EOF' 加引号可以防止 Shell 解析内部的 $ 符号
           python3 << 'EOF'
 import os
-template_path = '${{ github.workspace }}/config/config.yaml'
-output_path = '${{ github.workspace }}/temp_config/config.yaml'
-# 获取 Secret 环境遍历
+
+# 从环境变量中安全获取路径和数据
+workspace = os.environ.get('GITHUB_WORKSPACE_DIR')
 raw_data = os.environ.get('RAW_URLS_DATA', '')
+
+template_path = os.path.join(workspace, 'config/config.yaml')
+output_path = os.path.join(workspace, 'temp_config/config.yaml')
+
 # 过滤并格式化链接
 urls = [u.strip() for u in raw_data.split('\n') if len(u.strip()) > 10]
 formatted = [f'  - "{u}"\n' for u in urls]
 
 new_lines = ['show-useless-url: true\n']
+
+# 确保模板文件存在
+if not os.path.exists(template_path):
+    print(f"❌ 错误: 找不到模板文件 {template_path}")
+    exit(1)
+
 with open(template_path, 'r', encoding='utf-8') as f:
     for line in f:
         if '{SUB_URLS}' in line:
@@ -87,10 +102,13 @@ with open(template_path, 'r', encoding='utf-8') as f:
         else:
             new_lines.append(line)
 
+# 确保目标目录存在
+os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
 with open(output_path, 'w', encoding='utf-8') as f:
     f.writelines(new_lines)
+print(f"✅ 成功：已将 {len(urls)} 个订阅地址注入到临时配置")
 EOF
-          echo "✅ 订阅地址已动态注入到 temp_config/config.yaml"
 
           # 启动哨兵 (异步运行)
           (
