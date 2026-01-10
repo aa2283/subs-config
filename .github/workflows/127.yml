@@ -1,5 +1,5 @@
 
-name: Sub-Store Integrated Sync-126待成功-带配置备份
+name: Sub-Store Integrated Sync-127成功-隐藏订阅
 on:
   schedule:
     - cron: '15 4 * * *'
