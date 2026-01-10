@@ -89,6 +89,11 @@ jobs:
               f.writelines(new_lines)
           "
 
+          - name: 🔍 调试：查看生成的配置
+            run: |
+            echo "--- 生成的临时配置文件内容 ---"
+            cat ${{ github.workspace }}/temp_config/config.yaml
+
           # 【新增】关键步骤：在容器启动前，把仓库里的旧配置塞进挂载目录
           #echo "📂 正在预装载现有配置..."
           #[ -f "sub-store.json" ] && cp -f sub-store.json ${{ github.workspace }}/output/sub-store.json || echo "首次运行，无备份配置"
@@ -157,7 +162,7 @@ jobs:
           # 1. 启动后端容器 (此时 output/ 文件夹里已经是开头从 KV 提取的数据)
           docker rm -f checker >/dev/null 2>&1 || true
           docker run --name checker -d -p 8299:8299 \
-            -v ${{ github.workspace }}/config:/app/config \
+            -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master >/dev/null
 
