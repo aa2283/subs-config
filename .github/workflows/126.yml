@@ -23,23 +23,23 @@ jobs:
           # 下载并静默启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &  
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
           
           echo "⏳ 正在建立私密连接并同步至固定域名..."
           for i in {1..30}; do
-            # 1. 提取域名但不打印到日志
+            # 1. 提取域名
             TEMP_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
             
             if [ -n "$TEMP_URL" ]; then
-              # 2. 🚀 使用 Secrets 安全地同步到 CF KV，且不输出 curl 的任何日志
+              # 2. 同步到 CF KV
               curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
                    -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
                    -d "$TEMP_URL" > /dev/null
               
-              # 3. 将变量存入 GITHUB_ENV 供后续步骤内部使用
+              # 3. 存入 ENV
               echo "TUNNEL_URL=$TEMP_URL" >> $GITHUB_ENV
               
-              echo "✅ 固定域名已就绪！您可直接通过CT官方分配的域名或自定义域名访问。"
+              echo "✅ 固定域名已就绪！"
               echo "### 🌐 访问地址已更新至固定域名" >> $GITHUB_STEP_SUMMARY
               break
             fi
