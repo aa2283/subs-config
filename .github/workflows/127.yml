@@ -1,11 +1,83 @@
-name: Sub-Store-Sync-Test
+name: Sub-Store-Integrated-Sync127
 
 on:
+  schedule:
+    - cron: '15 4 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  test-job:
+  run-service:
     runs-on: ubuntu-latest
     steps:
-      - name: Hello World
-        run: echo "Workflows are working!"
+      - name: 1. 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 2. 注入订阅地址
+        run: |
+          mkdir -p ${{ github.workspace }}/output
+          mkdir -p ${{ github.workspace }}/temp_config
+          
+          export GITHUB_WORKSPACE_DIR="${{ github.workspace }}"
+          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+          
+          python3 << 'EOF'
+import os
+workspace = os.environ.get('GITHUB_WORKSPACE_DIR')
+raw_data = os.environ.get('RAW_URLS_DATA', '')
+template_path = os.path.join(workspace, 'config/config.yaml')
+output_path = os.path.join(workspace, 'temp_config/config.yaml')
+urls = [u.strip() for u in raw_data.split('\n') if len(u.strip()) > 10]
+formatted = [f'  - "{u}"\n' for u in urls]
+new_lines = ['show-useless-url: true\n']
+if os.path.exists(template_path):
+    with open(template_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if '{SUB_URLS}' in line: new_lines.extend(formatted)
+            elif 'show-useless-url' in line: continue
+            else: new_lines.append(line)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.writelines(new_lines)
+EOF
+
+      - name: 3. 执行检测与挂机
+        run: |
+          # 启动容器
+          docker run --name checker -d -p 8299:8299 \
+            -v ${{ github.workspace }}/temp_config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master
+          
+          # 准备私有库备份 (PAT_TOKEN)
+          rm -rf backup_repo
+          git clone https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git backup_repo
+          
+          git config --global user.email "bot@github.com"
+          git config --global user.name "AutoBot"
+          cp -f output/sub-store.json ./snapshot.json || touch ./snapshot.json
+
+          # 启动异步同步哨兵
+          (
+            while true; do
+              sleep 30
+              if [ -f "output/sub-store.json" ] && ! diff -q output/sub-store.json ./snapshot.json >/dev/null 2>&1; then
+                echo "📢 检测到配置变动，同步中..."
+                cp -f output/sub-store.json ./snapshot.json
+                # A. 同步到 KV
+                curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+                  -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data-binary @output/sub-store.json > /dev/null
+                # B. 同步到私有库
+                mkdir -p backup_repo/sub_config/
+                cp -f output/sub-store.json backup_repo/sub_config/sub-store.json
+                pushd backup_repo > /dev/null
+                git add . && git commit -m "🔖 备份: $(date +'%H:%M')" && git push origin main || git push origin master
+                popd > /dev/null
+              fi
+            done
+          ) &
+
+          # 挂机 15 分钟
+          for i in {15..1}; do echo "⏳ 剩余 $i 分钟"; sleep 60; done
