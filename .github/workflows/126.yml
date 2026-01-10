@@ -1,5 +1,5 @@
 
-name: Sub-Store Integrated Sync-125待成功-带配置备份
+name: Sub-Store Integrated Sync-126待成功-带配置备份
 on:
   schedule:
     - cron: '15 4 * * *'
