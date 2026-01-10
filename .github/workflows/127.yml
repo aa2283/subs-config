@@ -21,22 +21,7 @@ jobs:
           mkdir -p ${{ github.workspace }}/temp_config
           sudo chmod -R 777 ${{ github.workspace }}/output
 
-          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
-          python3 -c "
-          import os
-          template_path = '${{ github.workspace }}/config/config.yaml'
-          output_path = '${{ github.workspace }}/temp_config/config.yaml'
-          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
-          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
-          new_lines = ['show-useless-url: true\n']
-          with open(template_path, 'r', encoding='utf-8') as f:
-              for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  elif 'show-useless-url' in line: continue
-                  else: new_lines.append(line)
-          with open(output_path, 'w', encoding='utf-8') as f:
-              f.writelines(new_lines)
-          "
+          
           
           # 下载并静默启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
@@ -84,7 +69,26 @@ jobs:
             echo "⚠️ KV 为空或读取失败，将使用初始配置"
           fi
           
+          mkdir -p ${{ github.workspace }}/output
+          mkdir -p ${{ github.workspace }}/temp_config
           sudo chmod -R 777 ${{ github.workspace }}/output
+
+          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+          python3 -c "
+          import os
+          template_path = '${{ github.workspace }}/config/config.yaml'
+          output_path = '${{ github.workspace }}/temp_config/config.yaml'
+          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
+          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
+          new_lines = ['show-useless-url: true\n']
+          with open(template_path, 'r', encoding='utf-8') as f:
+              for line in f:
+                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
+                  elif 'show-useless-url' in line: continue
+                  else: new_lines.append(line)
+          with open(output_path, 'w', encoding='utf-8') as f:
+              f.writelines(new_lines)
+          "
 
           # 【新增】关键步骤：在容器启动前，把仓库里的旧配置塞进挂载目录
           #echo "📂 正在预装载现有配置..."
