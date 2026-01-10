@@ -52,42 +52,74 @@ jobs:
 
       - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
-
-          mkdir -p ${{ github.workspace }}/output
-          
-          echo "📥 正在从 KV 恢复配置..."
-          # 从 KV 获取数据并写入文件
-          RESPONSE=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
-               -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}")
-          
-          # 简单校验：如果 KV 是空的或者报错，不覆盖本地，防止洗掉数据
-          if [ -n "$RESPONSE" ] && [[ "$RESPONSE" != *"error"* ]]; then
-            echo "$RESPONSE" > ${{ github.workspace }}/output/sub-store.json
-            echo "✅ 配置恢复成功"
-          else
-            echo "⚠️ KV 为空或读取失败，将使用初始配置"
-          fi
-          
           mkdir -p ${{ github.workspace }}/output
           mkdir -p ${{ github.workspace }}/temp_config
           sudo chmod -R 777 ${{ github.workspace }}/output
 
+          echo "📥 正在从 KV 恢复配置..."
+          RESPONSE=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+               -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}")
+          
+          if [ -n "$RESPONSE" ] && [[ "$RESPONSE" != *"error"* ]]; then
+            echo "$RESPONSE" > ${{ github.workspace }}/output/sub-store.json
+            echo "✅ 配置恢复成功"
+          fi
+
+          # --- 修复后的 Python 注入逻辑 ---
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
-          python3 -c "
-          import os
-          template_path = '${{ github.workspace }}/config/config.yaml'
-          output_path = '${{ github.workspace }}/temp_config/config.yaml'
-          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
-          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
-          new_lines = ['show-useless-url: true\n']
-          with open(template_path, 'r', encoding='utf-8') as f:
-              for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  elif 'show-useless-url' in line: continue
-                  else: new_lines.append(line)
-          with open(output_path, 'w', encoding='utf-8') as f:
-              f.writelines(new_lines)
-          "
+          python3 << 'EOF'
+import os
+template_path = '${{ github.workspace }}/config/config.yaml'
+output_path = '${{ github.workspace }}/temp_config/config.yaml'
+# 获取 Secret 环境遍历
+raw_data = os.environ.get('RAW_URLS_DATA', '')
+# 过滤并格式化链接
+urls = [u.strip() for u in raw_data.split('\n') if len(u.strip()) > 10]
+formatted = [f'  - "{u}"\n' for u in urls]
+
+new_lines = ['show-useless-url: true\n']
+with open(template_path, 'r', encoding='utf-8') as f:
+    for line in f:
+        if '{SUB_URLS}' in line:
+            new_lines.extend(formatted)
+        elif 'show-useless-url' in line:
+            continue
+        else:
+            new_lines.append(line)
+
+with open(output_path, 'w', encoding='utf-8') as f:
+    f.writelines(new_lines)
+EOF
+          echo "✅ 订阅地址已动态注入到 temp_config/config.yaml"
+
+          # 启动哨兵 (异步运行)
+          (
+            echo ">>> [哨兵] 启动成功..."
+            HUNDRED_TIME=0
+            while true; do
+              sleep 10
+              if ! docker ps | grep -q 'checker'; then break; fi
+              LOGS=$(docker logs --tail 20 checker 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+              if echo "$LOGS" | grep -qE "保存本地成功|节点为空，跳过保存"; then
+                docker kill checker || true
+                break
+              fi
+              if echo "$LOGS" | grep -q "100.0%"; then
+                HUNDRED_TIME=$((HUNDRED_TIME + 10))
+                [ $HUNDRED_TIME -ge 120 ] && { docker kill checker || true; break; }
+              else
+                HUNDRED_TIME=0
+              fi
+            done
+          ) &
+
+          echo "🚀 启动容器，挂载 temp_config..."
+          # 【注意】这里必须挂载 temp_config 才能识别到注入后的订阅地址
+          docker run --name checker --rm -t \
+            -p 8299:8299 \
+            -v ${{ github.workspace }}/temp_config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
 
           - name: 🔍 调试：查看生成的配置
             run: |
