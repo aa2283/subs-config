@@ -1,7 +1,7 @@
-name: Sub-Store Integrated Sync-128未成功-隐藏订阅
+name: Sub-Store Integrated Sync-128成功-v隐藏订阅
 on:
-  schedule:
-    - cron: '15 4 * * *'
+  #schedule:
+    #- cron: '15 4 * * *'
   workflow_dispatch:
 
 permissions:
