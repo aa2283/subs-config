@@ -16,42 +16,44 @@ jobs:
 
       - name: 2. 环境准备与双隧道抢占
         run: |
-          # 下载 Cloudflared
+          # 1. 下载并准备
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           touch tunnel_8299.log tunnel_8199.log
 
-          # 启动隧道 (即使 8199 还没亮，也先占住域名)
+          # 2. 启动隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
 
-          # 安全掩码与 KV 同步域名 (供 Workers 使用)
-          echo "::add-mask::$URL_8299"
-          echo "::add-mask::$URL_8199"
-
-          sleep 5
+          # 3. 必须先等待域名生成
+          echo "⏳ 正在提取隧道域名..."
+          sleep 8 
+          
           URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
           URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
 
+          # 4. 【关键修复】拿到值后立即打码，这样下面的 echo 就会显示 ***
+          echo "::add-mask::$URL_8299"
+          echo "::add-mask::$URL_8199"
 
           echo "------------------------------------------------"
           echo "🔗 Sub-Store (8299): $URL_8299"
           echo "🔗 Subs-Check (8199): $URL_8199/admin"
           echo "------------------------------------------------"
-          # 这里可以根据需要加回同步 KV 的代码
-          # 提取隧道域名并同步到 KV
-          if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
-          # 存入 8299 (API)
-          curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
-          -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8299"
-  
-          # 存入 8199 (Admin)
-          curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
-          -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8199"
-    
-          echo "✅ 隧道地址已按 Worker B 规范同步至 KV"
-          fi
 
+          # 5. 同步到 KV
+          if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
+            curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8299"
+    
+            curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8199"
+      
+            echo "✅ 隧道地址已按 Worker B 规范同步至 KV"
+          else
+            echo "❌ 域名提取失败，请检查 Cloudflared 日志"
+            exit 1
+          fi
       - name: 3. 启动后台服务 (暴力修复权限与挂载)
         run: |
           # 1. 彻底清理旧的残余 (防止文件夹占位文件)
