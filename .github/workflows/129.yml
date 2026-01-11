@@ -14,45 +14,29 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 环境与隧道准备 (安全加密版)
+      - name: 8199 快速压力测试
         run: |
-          mkdir -p ${{ github.workspace }}/output
-          sudo chmod -R 777 ${{ github.workspace }}/output
-          
-          # 下载并静默启动隧道
+          # 1. 下载并启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          # 关键修复：先创建日志文件，防止 grep 报错
-          touch tunnel.log
+          # 2. 启动 8199 隧道 (增加 Host 伪装防止 502)
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile test_8199.log > /dev/null 2>&1 &
           
-          # 启动隧道
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
-          
-          echo "⏳ 正在建立私密连接并同步至固定域名..."
-          for i in {1..30}; do
-            # 1. 提取域名
-            TEMP_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
-            
-            if [ -n "$TEMP_URL" ]; then
-            # 【核心修改】将域名添加为掩码，之后所有日志输出此域名都会显示为 ***
-              echo "::add-mask::$TEMP_URL"
-              # 2. 同步到 CF KV
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
-                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
-                   -d "$TEMP_URL" > /dev/null
-              
-              # 3. 存入 ENV
-              echo "TUNNEL_URL=$TEMP_URL" >> $GITHUB_ENV
-              
-              echo "✅ 固定域名已就绪！"
-              echo "### 🌐 访问地址已更新至固定域名" >> $GITHUB_STEP_SUMMARY
+          # 3. 循环等待并打印域名
+          echo "⏳ 正在等待分配测试域名..."
+          for i in {1..20}; do
+            TEST_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' test_8199.log | head -n 1)
+            if [ -n "$TEST_URL" ]; then
+              echo "------------------------------------------------"
+              echo "✅ 8199 隧道已建立！"
+              echo "🔗 请手动访问以下地址进行测试："
+              echo "$TEST_URL/admin"
+              echo "------------------------------------------------"
               break
             fi
-            sleep 1
+            sleep 2
           done
-
-          if [ -z "$TEMP_URL" ]; then echo "❌ 隧道启动超时"; exit 1; fi
 
       - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
