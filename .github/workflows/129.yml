@@ -83,7 +83,32 @@ jobs:
           with open(output_path, 'w', encoding='utf-8') as f:
               f.writelines(new_lines)
           "
-          
+
+          # ... 接你原本的 python3 脚本 ...
+          with open(output_path, 'w', encoding='utf-8') as f:
+              f.writelines(new_lines)
+          "
+
+          # 🚀 【补全】启动 Subs-Check & Sub-Store 容器
+          echo "🚀 正在启动容器..."
+          # 关键点：
+          # 1. -p 8199:8199 必须显式映射
+          # 2. -v 挂载你刚才生成的 temp_config/config.yaml 到容器预期的位置
+          docker run -d \
+            --name subs-check \
+            -p 8299:3001 \
+            -p 8199:8199 \
+            -v ${{ github.workspace }}/output:/opt/sub-store/data \
+            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
+            ghcr.io/beck-8/subs-check:latest
+
+          echo "⏳ 等待容器初始化端口..."
+          # 给 Docker 镜像拉取和程序启动留出充足时间
+          sleep 20
+
+          # 🔍 最终诊断：看看 8199 到底亮没亮
+          echo "📊 当前端口监听状态："
+          sudo netstat -tulpn | grep -E "8199|8299" || echo "❌ 依然没有检测到端口！"
           (
             echo ">>> [哨兵] 启动成功..."
             HUNDRED_TIME=0
