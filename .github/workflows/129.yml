@@ -1,7 +1,7 @@
 name: Sub-Store Integrated Sync-129
 on:
-  schedule:
-    - cron: '15 4 * * *'
+  #schedule:
+    #- cron: '15 4 * * *'
   workflow_dispatch:
 
 permissions:
