@@ -35,16 +35,25 @@ jobs:
           echo "------------------------------------------------"
           # 这里可以根据需要加回同步 KV 的代码
 
-      - name: 3. 启动常驻服务 & 执行检测任务
+      - name: 3. 启动后台服务 (暴力修复权限与挂载)
         run: |
-          # 1. 确保目录存在
+          # 1. 彻底清理旧的残余 (防止文件夹占位文件)
+          sudo docker rm -f subs-manager checker || true
+          
+          # 2. 准备干净的目录
           mkdir -p ${{ github.workspace }}/output
           mkdir -p ${{ github.workspace }}/temp_config
           
-          # 2. 【核心修复】先生成一个空的或基础的配置文件，防止 Docker 创建目录
-          touch ${{ github.workspace }}/temp_config/config.yaml
+          # 【关键修复】如果 config.yaml 误变成了目录，强行删掉它
+          if [ -d "${{ github.workspace }}/temp_config/config.yaml" ]; then
+            echo "⚠️ 检测到 config.yaml 是个错误目录，正在强制纠正..."
+            sudo rm -rf "${{ github.workspace }}/temp_config/config.yaml"
+          fi
           
-          # 3. 执行你的 Python 注入逻辑 (生成真正的 config.yaml)
+          # 3. 预先创建文件，防止 Docker 再次把它当成目录
+          touch "${{ github.workspace }}/temp_config/config.yaml"
+          
+          # 4. 执行配置注入
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
           python3 -c "
           import os
@@ -62,18 +71,12 @@ jobs:
               f.writelines(new_lines)
           "
 
-          # 4. 再次检查文件是否真的生成了
-          if [ ! -f "${{ github.workspace }}/temp_config/config.yaml" ]; then
-            echo "❌ 严重错误：config.yaml 未能生成！"
-            exit 1
-          fi
-
-          # 5. 权限大赦
+          # 5. 权限大赦：给所有挂载目录 777
           sudo chmod -R 777 ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/temp_config
 
           # 🚀 启动管理后台
-          # 注意：挂载文件时确保宿主机路径是文件
+          echo "🚀 启动全功能管理后台..."
           docker run -d --name subs-manager \
             -p 8299:8299 \
             -p 8199:8199 \
@@ -81,14 +84,25 @@ jobs:
             -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
             ghcr.io/beck-8/subs-check:latest
 
-          echo "⏳ 等待服务初始化..."
+          echo "⏳ 等待容器内部服务初始化..."
           sleep 20
           
-          # 检查 8199 是否真的活了
-          sudo netstat -tulpn | grep :8199 || echo "⚠️ 8199 仍未就绪"
+          # 检查容器状态
+          if docker ps | grep -q 'subs-manager'; then
+            echo "✅ 容器 subs-manager 运行中"
+            docker logs --tail 20 subs-manager
+          else
+            echo "❌ 容器启动后崩溃了，查看原因："
+            docker logs subs-manager
+            exit 1
+          fi
 
-      - name: 5. 挂机守护与单向同步备份
+      - name: 5. 挂机守护 (防御性修正)
         run: |
+          # 防止因为文件还没生成导致 cp 失败挂掉
+          mkdir -p output
+          touch output/sub-store.json
+          # ... 后面接你原来的逻辑
           echo "📂 准备私有备份库..."
           git clone https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git backup_repo
           git config --global user.email "bot@github.com"
