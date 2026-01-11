@@ -23,6 +23,20 @@ jobs:
           # 下载 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
+
+          # 1. 诊断：启动隧道前，先看看 8199 端口到底有没有人在家
+          echo "🔍 正在检查 8199 端口状态..."
+          sudo lsof -i :8199 || echo "⚠️ 警告：8199 端口目前没有程序监听！"
+          
+          # 2. 启动隧道 (增加 --no-chunked-encoding 提高兼容性)
+          nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://localhost:8199 --no-chunked-encoding --logfile tunnel_8199.log > /dev/null 2>&1 &
+
+          # 3. 提取域名逻辑 (保持不变) ...
+          
+          # 4. 诊断：提取到域名后，尝试在本地访问一下 8199
+          echo "🔍 尝试在本地访问 8199..."
+          curl -I http://localhost:8199/admin || echo "❌ 本地访问 8199 失败，这就是 502 的原因！"
           
           # 创建两个独立的日志文件
           touch tunnel_8299.log
