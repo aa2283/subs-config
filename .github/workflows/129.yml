@@ -115,6 +115,8 @@ jobs:
           else
             echo "⚠️ KV 为空或读取失败，将使用初始配置"
           fi
+
+          sudo chmod -R 777 ${{ github.workspace }}/output
           
           # 检查容器状态
           if docker ps | grep -q 'subs-manager'; then
