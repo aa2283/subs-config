@@ -28,7 +28,9 @@ jobs:
           sleep 5
           URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
           URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
-          
+
+          echo "::add-mask::$URL_8299"
+          echo "::add-mask::$URL_8199"
           echo "------------------------------------------------"
           echo "🔗 Sub-Store (8299): $URL_8299"
           echo "🔗 Subs-Check (8199): $URL_8199/admin"
