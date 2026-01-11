@@ -1,8 +1,8 @@
 
 name: Sub-Store Integrated Sync-126待成功-带配置备份
 on:
-  schedule:
-    - cron: '15 4 * * *'
+  #schedule:
+    #- cron: '15 4 * * *'
   workflow_dispatch:
 
 permissions:
