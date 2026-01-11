@@ -62,35 +62,54 @@ jobs:
           
           sleep 15
 
-      - name: 3. 实时哨兵监控与双路备份
+      - name: 3. 启动服务 (基础回归版)
         run: |
-          # 初始 MD5
+          # 彻底清理旧环境
+          sudo docker rm -f subs-manager || true
+          mkdir -p ${{ github.workspace }}/output ${{ github.workspace }}/temp_config
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          
+          # 恢复配置 (如果 KV 有数据则覆盖，没有则保持)
+          curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" > ${{ github.workspace }}/output/sub-store.json || echo "{}" > ${{ github.workspace }}/output/sub-store.json
+          
+          # 注入你的 config.yaml (此处按你之前成功的 Python 或 Shell 逻辑)
+          # ... 
+          
+          # 启动容器
+          docker run -d --name subs-manager \
+            -p 8299:8299 -p 8199:8199 \
+            -v ${{ github.workspace }}/output:/opt/sub-store/data \
+            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
+            ghcr.io/beck-8/subs-check:latest
+          
+          # 必须给足够的启动时间
+          sleep 20
+
+      - name: 4. 挂机与同步哨兵
+        run: |
+          echo "🚀 启动监控..."
+          # 获取初始 MD5
           LAST_MD5=$(md5sum ${{ github.workspace }}/output/sub-store.json | cut -d ' ' -f1)
           
-          # 准备私有库备份环境
-          git clone https://${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository_owner }}/backup-repo.git backup_repo || mkdir backup_repo
-          
-          echo "🛰️ 哨兵已就位，开始 15 分钟实时监控..."
-          for i in {1..90}; do
-            sleep 10
+          # 循环 15 分钟
+          for i in {1..45}; do
+            # 检查容器是否还在运行，如果挂了立即尝试重启
+            if ! docker ps | grep -q subs-manager; then
+              echo "⚠️ 容器意外停止，尝试重启..."
+              docker restart subs-manager || true
+            fi
+
+            # 检查文件是否变化
             CURRENT_MD5=$(md5sum ${{ github.workspace }}/output/sub-store.json | cut -d ' ' -f1)
-            
             if [ "$CURRENT_MD5" != "$LAST_MD5" ]; then
-              echo "🔔 检测到配置更改，执行双同步..."
-              
-              # 1. 同步到 KV
+              echo "🔄 检测到数据变动，备份至 KV..."
               curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
-                -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data-binary @${{ github.workspace }}/output/sub-store.json
-              
-              # 2. 同步到私有库
-              cp ${{ github.workspace }}/output/sub-store.json backup_repo/
-              cd backup_repo && git config user.name "Bot" && git config user.email "bot@github.com"
-              git add . && git commit -m "Auto-Update $(date +'%H:%M:%S')" && git push || true
-              cd ..
-              
+                -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+                --data-binary @${{ github.workspace }}/output/sub-store.json
               LAST_MD5=$CURRENT_MD5
             fi
             
-            # 心跳显示
-            if (( i % 6 == 0 )); then echo "⏳ 已运行 $((i/6)) 分钟..."; fi
+            sleep 20
           done
+          echo "🏁 任务结束，执行最终私有库备份..."
