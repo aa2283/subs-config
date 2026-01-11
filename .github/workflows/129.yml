@@ -23,6 +23,30 @@ jobs:
           # 下载 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
+
+          echo "🔍 正在检测后端端口存活状态..."
+          PORT_READY=false
+          for i in {1..20}; do
+            # 尝试多种方式检测端口
+            if sudo lsof -i :8199 > /dev/null || netstat -tuln | grep -q :8199; then
+              echo "✅ 检测到 8199 端口已激活！"
+              PORT_READY=true
+              break
+            fi
+            echo "⏳ 等待 8199 端口监听中... ($i/20)"
+            sleep 2
+          done
+
+          if [ "$PORT_READY" = false ]; then
+            echo "❌ 错误：8199 端口未监听。"
+            echo "📋 --- 尝试抓取后端最新日志 ---"
+            # 尝试读取可能的日志文件，请根据你真实的日志路径修改
+            tail -n 50 backend_debug.log || tail -n 50 ${{ github.workspace }}/output/sub-store.log
+            echo "📋 --- 日志打印结束 ---"
+            exit 1
+          fi
+
+          # ... (后续启动隧道的代码保持不变)
           
           # 1. 端口存活预检：循环等待后端程序真正启动 (最长等待 40 秒)
           echo "🔍 正在检测后端端口存活状态..."
