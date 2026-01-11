@@ -116,17 +116,7 @@ jobs:
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master || [ $? -eq 137 ] || [ $? -eq 143 ]
-
-            echo "1. 检查宿主机端口状态:"
-          sudo netstat -tulpn | grep :8199
-          
-          echo "2. 尝试本地 Curl (不经过隧道):"
-          # -v 显示详细过程，--connect-timeout 限制时间
-          curl -v http://127.0.0.1:8199/admin || curl -v http://0.0.0.0:8199/admin
-          
-          echo "3. 检查容器内部监听 (需安装了 docker):"
-          docker exec subs-check netstat -an | grep 8199 || echo "容器内部似乎没开 8199"
-
+            
       - name: 4. 同步结果回仓库 (节点+配置)
         run: |
 
