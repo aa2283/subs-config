@@ -14,41 +14,28 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 8199 深度诊断测试
+      - name: 2. 启动双隧道测试 (不带同步)
         run: |
-          # 1. 下载并赋予权限
+          # 1. 下载并准备
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          
-          # 2. 检查 8199 端口是否真的有程序在跑
-          echo "🔍 检查 8199 端口状态..."
-          sudo netstat -tulpn | grep :8199 || echo "❌ 警告：8199 端口没有程序在监听！隧道连接目标不存在。"
+          touch tunnel_8299.log tunnel_8199.log
 
-          # 3. 启动隧道（不再隐藏错误，直接输出到 test_8199.log）
-          echo "🚀 正在启动隧道..."
-          ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile test_8199.log > tunnel_stdout.log 2>&1 &
-          
-          # 4. 等待并诊断
+          # 2. 强行启动两个隧道 (不管端口现在活没活)
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
+
+          # 3. 提取并打印域名 (方便你手动点击)
+          echo "⏳ 正在提取临时隧道域名..."
           sleep 5
-          if [ ! -f test_8199.log ]; then
-            echo "❌ 错误：test_8199.log 文件未生成！cloudflared 启动失败。"
-            echo "📋 启动报错详情："
-            cat tunnel_stdout.log
-            exit 1
-          fi
-
-          echo "⏳ 正在提取域名..."
-          for i in {1..15}; do
-            TEST_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' test_8199.log | head -n 1)
-            if [ -n "$TEST_URL" ]; then
-              echo "✅ 8199 隧道域名: $TEST_URL/admin"
-              break
-            fi
-            echo "等待中... ($i/15)"
-            # 如果还没拿到域名，看看日志里写了什么
-            tail -n 3 test_8199.log
-            sleep 2
-          done
+          URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
+          URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+          
+          echo "------------------------------------------------"
+          echo "🔗 Sub-Store (8299): $URL_8299"
+          echo "🔗 Subs-Check (8199): $URL_8199/admin"
+          echo "------------------------------------------------"
+          echo "⚠️ 注意：如果第3步还没跑完，点击 8199 可能是 502，请等第3步拉取镜像成功后再刷新。"
 
       - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
