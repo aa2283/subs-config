@@ -16,23 +16,19 @@ jobs:
 
       - name: 2. 环境准备与双隧道抢占
         run: |
-          # 1. 下载并准备
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           touch tunnel_8299.log tunnel_8199.log
 
-          # 2. 启动隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
 
-          # 3. 必须先等待域名生成
           echo "⏳ 正在提取隧道域名..."
-          sleep 8 
+          sleep 10 # 稍微增加等待确保域名生成
           
           URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
           URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
 
-          # 4. 【关键修复】拿到值后立即打码，这样下面的 echo 就会显示 ***
           echo "::add-mask::$URL_8299"
           echo "::add-mask::$URL_8199"
 
@@ -41,57 +37,39 @@ jobs:
           echo "🔗 Subs-Check (8199): $URL_8199/admin"
           echo "------------------------------------------------"
 
-          # 5. 同步到 KV
           if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
             curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
             -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8299"
-    
             curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
             -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8199"
-      
-            echo "✅ 隧道地址已按 Worker B 规范同步至 KV"
+            echo "✅ 隧道地址已同步至 KV"
           else
-            echo "❌ 域名提取失败，请检查 Cloudflared 日志"
-            exit 1
+            echo "❌ 域名提取失败"; exit 1
           fi
-      - name: 3. 启动后台服务 (暴力修复权限与挂载 + KV 自动恢复)
+
+      - name: 3. 启动后台服务 (配置恢复与容器运行)
         run: |
-          # 1. 彻底清理旧的残余 (防止文件夹占位文件)
-          sudo docker rm -f subs-manager checker || true
+          sudo docker rm -f subs-manager || true
+          mkdir -p output temp_config
           
-          # 2. 准备干净的目录
-          mkdir -p ${{ github.workspace }}/output
-          mkdir -p ${{ github.workspace }}/temp_config
-          
-          # 【新增：从 KV 恢复 sub-store.json】
-          echo "📥 正在从 KV 恢复 sub-store.json 数据..."
+          echo "📥 从 KV 恢复配置..."
           HTTP_CODE=$(curl -s -L -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
             "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
-            -o ${{ github.workspace }}/output/sub-store.json)
+            -o output/sub-store.json)
 
-          if [ "$HTTP_CODE" -eq 200 ]; then
-            echo "✅ 数据恢复成功 (HTTP $HTTP_CODE)"
-          else
-            echo "⚠️ KV 中尚无备份或读取失败 (HTTP $HTTP_CODE)，将初始化全新配置"
-            echo '{"subscribes":[],"nodes":[],"sub-store-backend":[]}' > ${{ github.workspace }}/output/sub-store.json
+          if [ "$HTTP_CODE" -ne 200 ]; then
+            echo '{"subscribes":[],"nodes":[],"sub-store-backend":[]}' > output/sub-store.json
           fi
 
-          # 3. 【纠正逻辑】如果 config.yaml 误变成了目录，强行删掉它
-          if [ -d "${{ github.workspace }}/temp_config/config.yaml" ]; then
-            echo "⚠️ 检测到 config.yaml 是个错误目录，正在强制纠正..."
-            sudo rm -rf "${{ github.workspace }}/temp_config/config.yaml"
-          fi
+          if [ -d "temp_config/config.yaml" ]; then sudo rm -rf "temp_config/config.yaml"; fi
+          touch temp_config/config.yaml
           
-          # 4. 预先创建文件，防止 Docker 再次把它当成目录
-          touch "${{ github.workspace }}/temp_config/config.yaml"
-          
-          # 5. 执行 Python 配置注入 (保持你原来的代码不变)
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
           python3 -c "
           import os
-          template_path = '${{ github.workspace }}/config/config.yaml'
-          output_path = '${{ github.workspace }}/temp_config/config.yaml'
+          template_path = 'config/config.yaml'
+          output_path = 'temp_config/config.yaml'
           raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
           formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
           new_lines = ['show-useless-url: true\n']
@@ -104,82 +82,39 @@ jobs:
               f.writelines(new_lines)
           "
 
-          # 6. 权限大赦：给所有挂载目录 777 (此时 sub-store.json 已在里面，权限会被一起修正)
-          sudo chmod -R 777 ${{ github.workspace }}/output
-          sudo chmod -R 777 ${{ github.workspace }}/temp_config
+          sudo chmod -R 777 output temp_config
 
-          # 🚀 启动管理后台
-          echo "🚀 启动全功能管理后台..."
+          echo "🚀 启动容器..."
           docker run -d --name subs-manager \
-            -p 8299:8299 \
-            -p 8199:8199 \
+            -p 8299:8299 -p 8199:8199 \
             -v ${{ github.workspace }}/output:/opt/sub-store/data \
             -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
             ghcr.io/beck-8/subs-check:latest
 
-          echo "⏳ 等待容器内部服务初始化..."
           sleep 20
-          
-          # 7. 检查容器状态
-          if docker ps | grep -q 'subs-manager'; then
-            echo "✅ 容器 subs-manager 运行中"
-            docker logs --tail 20 subs-manager
-          else
-            echo "❌ 容器启动后崩溃了，查看原因："
-            docker logs subs-manager
-            exit 1
-          fi
+          docker ps | grep -q 'subs-manager' || (docker logs subs-manager && exit 1)
 
-          # 5. 权限大赦：给所有挂载目录 777
-          sudo chmod -R 777 ${{ github.workspace }}/output
-          sudo chmod -R 777 ${{ github.workspace }}/temp_config
-
-          # 🚀 启动管理后台
-          echo "🚀 启动全功能管理后台..."
-          docker run -d --name subs-manager \
-            -p 8299:8299 \
-            -p 8199:8199 \
-            -v ${{ github.workspace }}/output:/opt/sub-store/data \
-            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
-            ghcr.io/beck-8/subs-check:latest
-
-          echo "⏳ 等待容器内部服务初始化..."
-          sleep 20
-          
-          # 检查容器状态
-          if docker ps | grep -q 'subs-manager'; then
-            echo "✅ 容器 subs-manager 运行中"
-            docker logs --tail 20 subs-manager
-          else
-            echo "❌ 容器启动后崩溃了，查看原因："
-            docker logs subs-manager
-            exit 1
-          fi
-
-      - name: 5. 挂机守护 (防御性修正)
+      - name: 5. 挂机守护与哨兵备份
         run: |
-          # 防止因为文件还没生成导致 cp 失败挂掉
-          mkdir -p output
-          touch output/sub-store.json
-          # ... 后面接你原来的逻辑
-          echo "📂 准备私有备份库..."
           git clone https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git backup_repo
+          mkdir -p backup_repo/sub_config
           git config --global user.email "bot@github.com"
           git config --global user.name "AutoBot"
           cp -f output/sub-store.json ./snapshot.json
 
-          # 后台备份哨兵
+          LIST="${{ vars.SUB_LIST || 'zh:ClashMeta' }}"
+
+          # 启动哨兵进程，并保存其 PID 方便最后杀掉
           (
             while true; do
               sleep 30
               if ! diff -q output/sub-store.json ./snapshot.json >/dev/null 2>&1; then
                 echo "📢 检测到配置更新，同步中..."
                 cp -f output/sub-store.json ./snapshot.json
-                # A. 同步到 KV
+                # A. KV 同步
                 curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
-                  -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data-binary @output/sub-store.json > /dev/null
-                # B. 同步到私有库 (调用已经跑在后台的 8299 端口)
-                LIST="${{ vars.SUB_LIST || 'zh:ClashMeta' }}"
+                  -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data-binary @output/sub-store.json
+                # B. 仓库备份
                 IFS=',' read -ra ITEMS <<< "$LIST"
                 for item in "${ITEMS[@]}"; do
                   NAME="${item%%:*}"; TYPE="${item##*:}"
@@ -192,9 +127,12 @@ jobs:
               fi
             done
           ) &
+          SENTINEL_PID=$!
 
           # 保持运行 15 分钟
           for i in {15..1}; do
             echo "⏳ 8199 管理页面在线中... 剩余 $i 分钟"
             sleep 60
           done
+          
+          kill $SENTINEL_PID || true
