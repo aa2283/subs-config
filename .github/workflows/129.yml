@@ -35,34 +35,14 @@ jobs:
           echo "------------------------------------------------"
           # 这里可以根据需要加回同步 KV 的代码
 
-      - name: 3. 启动常驻服务 & 执行检测任务
+      - name: 3. 启动常驻服务 & 执行检测任务 (修复崩溃版)
         run: |
+          # 1. 深度清理权限
           mkdir -p ${{ github.workspace }}/output ${{ github.workspace }}/temp_config
-          chmod -R 777 ${{ github.workspace }}/output
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          sudo chmod -R 777 ${{ github.workspace }}/temp_config
 
-          # --- A. 恢复配置 (省略详细 curl 逻辑，保持你原有的即可) ---
-          RESPONSE=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}")
-          [ -n "$RESPONSE" ] && [[ "$RESPONSE" != *"error"* ]] && echo "$RESPONSE" > ${{ github.workspace }}/output/sub-store.json
-
-          # --- B. Python 注入生成 config.yaml ---
-          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
-          python3 -c "
-          import os
-          template_path = '${{ github.workspace }}/config/config.yaml'
-          output_path = '${{ github.workspace }}/temp_config/config.yaml'
-          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
-          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
-          new_lines = ['show-useless-url: true\n']
-          with open(template_path, 'r', encoding='utf-8') as f:
-              for line in f:
-                  if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
-                  else: new_lines.append(line)
-          with open(output_path, 'w', encoding='utf-8') as f:
-              f.writelines(new_lines)
-          "
-
-          # --- C. 启动常驻管理容器 (-d 后台模式) ---
-          echo "🚀 启动管理后台 (端口 8199+8299)..."
+          # --- 步骤 A: 启动管理后台 (保持 -d) ---
           docker run -d --name subs-manager \
             -p 8299:8299 \
             -p 8199:8199 \
@@ -70,15 +50,12 @@ jobs:
             -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
             ghcr.io/beck-8/subs-check:latest
 
-          sleep 15
-          echo "📊 端口验证："
-          sudo netstat -tulpn | grep -E "8199|8299"
+          sleep 10
 
-          # --- D. 执行一次性检测任务 (Host 网络模式) ---
-          # 使用 --network host 避免抢占映射出来的端口
+          # --- 步骤 B: 执行检测任务 (关键修改：去掉 --network host) ---
+          # 这样它就不会去抢宿主机的 8199 端口，从而停止 bind error 重启循环
           echo "🚀 开始实时检测逻辑..."
           docker run --name checker --rm -t \
-            --network host \
             -v ${{ github.workspace }}/temp_config:/app/config \
             -v ${{ github.workspace }}/output:/app/output \
             ghcr.io/aa2283/subs-check:master || true
