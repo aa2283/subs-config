@@ -54,7 +54,7 @@ jobs:
             echo "❌ 域名提取失败，请检查 Cloudflared 日志"
             exit 1
           fi
-      - name: 3. 启动后台服务 (暴力修复权限与挂载)
+      - name: 3. 启动后台服务 (暴力修复权限与挂载 + KV 自动恢复)
         run: |
           # 1. 彻底清理旧的残余 (防止文件夹占位文件)
           sudo docker rm -f subs-manager checker || true
@@ -63,16 +63,30 @@ jobs:
           mkdir -p ${{ github.workspace }}/output
           mkdir -p ${{ github.workspace }}/temp_config
           
-          # 【关键修复】如果 config.yaml 误变成了目录，强行删掉它
+          # 【新增：从 KV 恢复 sub-store.json】
+          echo "📥 正在从 KV 恢复 sub-store.json 数据..."
+          HTTP_CODE=$(curl -s -L -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+            -o ${{ github.workspace }}/output/sub-store.json)
+
+          if [ "$HTTP_CODE" -eq 200 ]; then
+            echo "✅ 数据恢复成功 (HTTP $HTTP_CODE)"
+          else
+            echo "⚠️ KV 中尚无备份或读取失败 (HTTP $HTTP_CODE)，将初始化全新配置"
+            echo '{"subscribes":[],"nodes":[],"sub-store-backend":[]}' > ${{ github.workspace }}/output/sub-store.json
+          fi
+
+          # 3. 【纠正逻辑】如果 config.yaml 误变成了目录，强行删掉它
           if [ -d "${{ github.workspace }}/temp_config/config.yaml" ]; then
             echo "⚠️ 检测到 config.yaml 是个错误目录，正在强制纠正..."
             sudo rm -rf "${{ github.workspace }}/temp_config/config.yaml"
           fi
           
-          # 3. 预先创建文件，防止 Docker 再次把它当成目录
+          # 4. 预先创建文件，防止 Docker 再次把它当成目录
           touch "${{ github.workspace }}/temp_config/config.yaml"
           
-          # 4. 执行配置注入
+          # 5. 执行 Python 配置注入 (保持你原来的代码不变)
           export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
           python3 -c "
           import os
@@ -89,6 +103,32 @@ jobs:
           with open(output_path, 'w', encoding='utf-8') as f:
               f.writelines(new_lines)
           "
+
+          # 6. 权限大赦：给所有挂载目录 777 (此时 sub-store.json 已在里面，权限会被一起修正)
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          sudo chmod -R 777 ${{ github.workspace }}/temp_config
+
+          # 🚀 启动管理后台
+          echo "🚀 启动全功能管理后台..."
+          docker run -d --name subs-manager \
+            -p 8299:8299 \
+            -p 8199:8199 \
+            -v ${{ github.workspace }}/output:/opt/sub-store/data \
+            -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
+            ghcr.io/beck-8/subs-check:latest
+
+          echo "⏳ 等待容器内部服务初始化..."
+          sleep 20
+          
+          # 7. 检查容器状态
+          if docker ps | grep -q 'subs-manager'; then
+            echo "✅ 容器 subs-manager 运行中"
+            docker logs --tail 20 subs-manager
+          else
+            echo "❌ 容器启动后崩溃了，查看原因："
+            docker logs subs-manager
+            exit 1
+          fi
 
           # 5. 权限大赦：给所有挂载目录 777
           sudo chmod -R 777 ${{ github.workspace }}/output
