@@ -81,48 +81,68 @@ jobs:
           # 权限彻底开放
           sudo chmod -R 777 ${{ github.workspace }}/output
 
-      - name: 4. 启动容器并热同步
+      - name: 4. 启动容器 (修正挂载与热恢复)
         run: |
-          # 启动容器
+          # 1. 彻底清理旧容器
+          docker rm -f checker || true
+          
+          # 2. 如果之前恢复了文件，确保它在挂载目录里
+          if [ -f "${{ github.workspace }}/output/sub-store.json" ]; then
+             echo "📂 正在同步恢复文件到挂载目录..."
+             # 确保目标文件夹存在
+             mkdir -p ${{ github.workspace }}/output
+             # 修正宿主机权限，确保 Docker 里的 node/root 用户能读写
+             sudo chmod -R 777 ${{ github.workspace }}/output
+             echo "✅ 挂载预处理完成"
+          fi
+
+          # 3. 启动容器 (注意：这次我们去掉了 -d，先测试一下是否能跑起来)
+          # 或者保留 -d 但增加健康检查
+          echo "🚀 正在启动容器..."
           docker run --name checker -d \
             -p 8299:8299 -p 8199:8199 \
             -v ${{ github.workspace }}/output:/app/output \
             -v ${{ github.workspace }}/output:/opt/sub-store/data \
             ghcr.io/aa2283/subs-check:master
-          
-          sleep 5
 
-          # 如果恢复的文件存在，强制推送到容器内部，覆盖其初始化的空文件
-          if [ -f "${{ github.workspace }}/output/sub-store.json" ]; then
-             echo "🚀 正在热同步恢复文件到容器..."
-             docker cp ${{ github.workspace }}/output/sub-store.json checker:/opt/sub-store/data/sub-store.json
-             docker cp ${{ github.workspace }}/output/sub-store.json checker:/app/output/sub-store.json
-             docker exec -u root checker chmod 777 /opt/sub-store/data/sub-store.json /app/output/sub-store.json
-             echo "✅ 热同步完成"
+          # 4. 等待并检查容器状态
+          sleep 10
+          if ! docker ps | grep -q 'checker'; then
+            echo "❌ 容器启动失败！正在打印崩溃日志："
+            docker logs checker
+            exit 1
           fi
+          echo "✅ 容器运行正常"
 
-      - name: 5. 哨兵实时同步 (二进制上传)
+      - name: 5. 哨兵实时同步 (全量二进制备份)
         run: |
-          cp -f ${{ github.workspace }}/output/sub-store.json ./snapshot.json
+          # 建立快照
+          if [ -f "output/sub-store.json" ]; then
+            cp -f output/sub-store.json ./snapshot.json
+          else
+            echo "{}" > ./snapshot.json
+          fi
           
           (
+            echo ">>> [哨兵] 启动成功，监控中..."
             while true; do
               sleep 30
-              # 直接对比容器内生成的文件
-              docker exec checker cat /opt/sub-store/data/sub-store.json > ./current.json
-              
-              if ! diff -q ./current.json ./snapshot.json >/dev/null 2>&1; then
-                if [ $(stat -c%s ./current.json) -gt 100 ]; then
-                  echo "📢 检测到配置更改，正在以二进制模式上传..."
-                  cp -f ./current.json ./snapshot.json
-                  
-                  # 使用 --data-binary 确保所有转义符、换行符被原样上传
+              # 确保容器还在，如果不在了尝试重启
+              if ! docker ps | grep -q 'checker'; then
+                echo "⚠️ 检测到容器异常退出，尝试重启..."
+                docker start checker || break
+              fi
+
+              # 比对变化
+              if ! diff -q output/sub-store.json ./snapshot.json >/dev/null 2>&1; then
+                # 再次校验 JSON 合法性，防止上传空配置
+                if jq . output/sub-store.json > /dev/null 2>&1 && [ $(stat -c%s output/sub-store.json) -gt 100 ]; then
+                  echo "📢 检测到配置更改，正在同步至云端..."
+                  cp -f output/sub-store.json ./snapshot.json
                   curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
                     -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
-                    --data-binary @./current.json
-                  echo "✅ KV 已更新"
+                    --data-binary @output/sub-store.json
                 fi
               fi
             done
           ) &
-          done
