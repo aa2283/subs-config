@@ -20,36 +20,45 @@ jobs:
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
 
-          # === 1. 启动后端服务 (Subs-Check) ===
-          # 注意：必须使用 nohup 和 & 确保它在后台持续运行，不会随步骤结束被杀死
+          # === 1. 寻找并准备程序文件 ===
+          echo "🔍 正在寻找 subs-check 程序..."
+          # 自动寻找名为 subs-check 的文件（排除日志和文件夹）
+          FILE_PATH=$(find . -maxdepth 2 -name "subs-check" -type f | head -n 1)
+          
+          if [ -z "$FILE_PATH" ]; then
+            echo "❌ 错误：在当前目录找不到 subs-check 二进制文件！"
+            echo "当前目录文件列表："
+            ls -R
+            exit 1
+          fi
+          
+          echo "✅ 找到程序：$FILE_PATH"
+          chmod +x "$FILE_PATH"
+
+          # === 2. 启动服务 ===
           echo "🚀 启动 Subs-Check 服务..."
+          # 使用找到的确切路径启动
+          nohup "$FILE_PATH" > ${{ github.workspace }}/output/backend.log 2>&1 &
           
-          # 如果是二进制文件启动 (假设文件名叫 subs-check):
-          nohup ./subs-check > ${{ github.workspace }}/output/backend.log 2>&1 &
-          
-          # 或者如果你是用 Docker 启动的，请取消下面这行的注释并修改:
-          # docker run -d --name subs-check -p 8199:8199 -p 8299:3001 beck8/subs-check
-          
-          # 关键：给程序一点启动时间
           sleep 15
 
-          # === 2. 存活验证 ===
-          echo "🔍 检查端口监听状态..."
-          sudo netstat -tulpn | grep -E "8199|8299" || {
-            echo "❌ 错误：服务未能在 8199/8299 端口启动！展示末尾日志："
-            tail -n 50 ${{ github.workspace }}/output/backend.log
+          # === 3. 检查端口 (8199/8299) ===
+          if ! sudo netstat -tulpn | grep -E "8199|8299"; then
+            echo "❌ 错误：端口未启动。查看日志内容："
+            cat ${{ github.workspace }}/output/backend.log
             exit 1
-          }
+          fi
 
-          # === 3. 下载并启动隧道 ===
+          # === 4. 下载并启动隧道 (保持不变) ===
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
+          
           touch tunnel_8299.log tunnel_8199.log
-
-          # 启动双隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
           nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
 
+          # === 5. 提取并同步 KV (保持不变) ===
+          # ... (后续代码同前)
           # === 4. 提取域名并同步到 KV ===
           URL_8299=""
           URL_8199=""
