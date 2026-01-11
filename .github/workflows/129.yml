@@ -15,7 +15,7 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 环境与双隧道准备 (8299 & 8199)
+      - name: 2. 环境与双隧道准备 (8299 & 8199 修复整合版)
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
@@ -23,31 +23,36 @@ jobs:
           # 下载 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
+          
+          # 1. 端口存活预检：循环等待后端程序真正启动 (最长等待 40 秒)
+          echo "🔍 正在检测后端端口存活状态..."
+          PORT_READY=false
+          for i in {1..20}; do
+            if sudo lsof -i :8199 > /dev/null; then
+              echo "✅ 检测到 8199 端口已激活！"
+              PORT_READY=true
+              break
+            fi
+            echo "⏳ 等待 8199 端口监听中... ($i/20)"
+            sleep 2
+          done
 
-          # 1. 诊断：启动隧道前，先看看 8199 端口到底有没有人在家
-          echo "🔍 正在检查 8199 端口状态..."
-          sudo lsof -i :8199 || echo "⚠️ 警告：8199 端口目前没有程序监听！"
-          
-          # 2. 启动隧道 (增加 --no-chunked-encoding 提高兼容性)
-          nohup ./cloudflared tunnel --url http://localhost:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
-          nohup ./cloudflared tunnel --url http://localhost:8199 --no-chunked-encoding --logfile tunnel_8199.log > /dev/null 2>&1 &
+          if [ "$PORT_READY" = false ]; then
+            echo "❌ 错误：后端服务未能在规定时间内启动 8199 端口，请检查后端启动日志！"
+            # 这里可以 cat 你的后端日志文件，例如：cat backend.log
+            exit 1
+          fi
 
-          # 3. 提取域名逻辑 (保持不变) ...
+          # 2. 准备日志文件
+          touch tunnel_8299.log tunnel_8199.log
           
-          # 4. 诊断：提取到域名后，尝试在本地访问一下 8199
-          echo "🔍 尝试在本地访问 8199..."
-          curl -I http://localhost:8199/admin || echo "❌ 本地访问 8199 失败，这就是 502 的原因！"
-          
-          # 创建两个独立的日志文件
-          touch tunnel_8299.log
-          touch tunnel_8199.log
-          
-          # 启动隧道 1 (8299)
+          # 3. 启动双隧道
+          # 8299 保持普通启动
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
-          # 启动隧道 2 (8199)
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --logfile tunnel_8199.log > /dev/null 2>&1 &
+          # 8199 增加 Host 伪装和兼容性参数，解决 502 问题
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --no-chunked-encoding --logfile tunnel_8199.log > /dev/null 2>&1 &
           
-          echo "⏳ 正在建立双重私密连接..."
+          echo "⏳ 正在建立双重私密连接并同步至 KV..."
           
           URL_8299=""
           URL_8199=""
@@ -59,37 +64,42 @@ jobs:
             
             # 只有当两个都拿到时才进行后续操作
             if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
-              # 1. 掩码处理 (日志脱敏)
+              # 掩码处理 (日志脱敏)
               echo "::add-mask::$URL_8299"
               echo "::add-mask::$URL_8199"
               
-              # 2. 同步 8299 到 KV (TARGET_API)
+              # 同步 8299 到 KV (TARGET_API)
               curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
                    -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299" > /dev/null
               
-              # 3. 同步 8199 到 KV (TARGET_API_8199)
+              # 同步 8199 到 KV (TARGET_API_8199)
               curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
                    -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199" > /dev/null
               
-              # 4. 存入 ENV 供后续步骤使用
+              # 存入 ENV 供后续步骤使用
               echo "TUNNEL_URL_8299=$URL_8299" >> $GITHUB_ENV
               echo "TUNNEL_URL_8199=$URL_8199" >> $GITHUB_ENV
               
               echo "✅ 双隧道已就绪！"
               echo "### 🌐 隧道状态汇总" >> $GITHUB_STEP_SUMMARY
               echo "* **8299**: 已同步至 TARGET_API" >> $GITHUB_STEP_SUMMARY
-              echo "* **8199**: 已同步至 TARGET_API_8199" >> $GITHUB_STEP_SUMMARY
+              echo "* **8199**: 已同步至 TARGET_API_8199 (端口已确认存活)" >> $GITHUB_STEP_SUMMARY
               break
             fi
-            echo "等待域名分配中... ($i/30)"
+            echo "等待 Cloudflare 分配域名... ($i/30)"
             sleep 2
           done
 
+          # 4. 最后自检
           if [ -z "$URL_8299" ] || [ -z "$URL_8199" ]; then 
-            echo "❌ 隧道启动超时"
+            echo "❌ 隧道域名提取失败，查看日志："
+            tail -n 20 tunnel_8199.log
             exit 1 
           fi
 
+          echo "🔍 最终本地连通性测试 (8199):"
+          curl -I -s http://127.0.0.1:8199/admin | grep "HTTP/" || echo "⚠️ 提示：隧道已通，但本地 /admin 路径未返回正常响应"
+      
       - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
 
