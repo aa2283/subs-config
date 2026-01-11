@@ -34,6 +34,18 @@ jobs:
           echo "🔗 Subs-Check (8199): $URL_8199/admin"
           echo "------------------------------------------------"
           # 这里可以根据需要加回同步 KV 的代码
+          # 提取隧道域名并同步到 KV
+          if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
+          # 存入 8299 (API)
+          curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
+          -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8299"
+  
+          # 存入 8199 (Admin)
+          curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
+          -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" --data "$URL_8199"
+    
+          echo "✅ 隧道地址已按 Worker B 规范同步至 KV"
+          fi
 
       - name: 3. 启动后台服务 (暴力修复权限与挂载)
         run: |
