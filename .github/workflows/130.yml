@@ -58,6 +58,18 @@ jobs:
             "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
             -o output/sub-store.json)
 
+            # 【新增：调试代码】
+          if [ -f "output/sub-store.json" ]; then
+            echo "📊 恢复的文件预览 (前10行):"
+            head -n 10 output/sub-store.json
+            echo "🔍 检查 JSON 语法:"
+            jq . output/sub-store.json > /dev/null && echo "✅ 语法合法" || echo "❌ 语法错误"
+          fi
+
+          # 【关键修复：彻底授权】
+          # 必须先创建目录再授权，否则容器内的用户可能无法修改文件
+          sudo chmod -R 777 ${{ github.workspace }}/output
+
           if [ "$HTTP_CODE" -ne 200 ]; then
             echo '{"subscribes":[],"nodes":[],"sub-store-backend":[]}' > output/sub-store.json
           fi
