@@ -15,7 +15,7 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 环境与双隧道准备 (8299 & 8199 修复整合版)
+      - name: 2. 环境与双隧道准备 (本地唤醒版)
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
@@ -23,47 +23,30 @@ jobs:
           # 下载 cloudflared
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-
-          echo "🔍 正在检测后端端口存活状态..."
-          PORT_READY=false
-          for i in {1..20}; do
-            # 尝试多种方式检测端口
-            if sudo lsof -i :8199 > /dev/null || netstat -tuln | grep -q :8199; then
-              echo "✅ 检测到 8199 端口已激活！"
-              PORT_READY=true
-              break
-            fi
-            echo "⏳ 等待 8199 端口监听中... ($i/20)"
-            sleep 2
-          done
-
-          if [ "$PORT_READY" = false ]; then
-            echo "❌ 错误：8199 端口未监听。"
-            echo "📋 --- 尝试抓取后端最新日志 ---"
-            # 尝试读取可能的日志文件，请根据你真实的日志路径修改
-            tail -n 50 backend_debug.log || tail -n 50 ${{ github.workspace }}/output/sub-store.log
-            echo "📋 --- 日志打印结束 ---"
-            exit 1
-          fi
-
-          # ... (后续启动隧道的代码保持不变)
           
-          # 1. 端口存活预检：循环等待后端程序真正启动 (最长等待 40 秒)
-          echo "🔍 正在检测后端端口存活状态..."
-          PORT_READY=false
-          for i in {1..20}; do
-            if sudo lsof -i :8199 > /dev/null; then
-              echo "✅ 检测到 8199 端口已激活！"
-              PORT_READY=true
+          # 1. 【核心步骤】本地唤醒与连通性强制检测
+          echo "🌐 尝试直接访问本地 127.0.0.1:8199/admin ..."
+          # 等待最多 30 秒，直到 curl 成功或超时
+          SUCCESS=false
+          for i in {1..15}; do
+            # -i 显示响应头, -s 静默, -L 跟踪重定向
+            RESPONSE=$(curl -isL --max-time 5 http://127.0.0.1:8199/admin | head -n 20)
+            if echo "$RESPONSE" | grep -q "HTTP/"; then
+              echo "✅ 本地唤醒成功！响应如下："
+              echo "$RESPONSE"
+              SUCCESS=true
               break
             fi
-            echo "⏳ 等待 8199 端口监听中... ($i/20)"
+            echo "⏳ 端口 8199 尚未响应，重试中... ($i/15)"
             sleep 2
           done
 
-          if [ "$PORT_READY" = false ]; then
-            echo "❌ 错误：后端服务未能在规定时间内启动 8199 端口，请检查后端启动日志！"
-            # 这里可以 cat 你的后端日志文件，例如：cat backend.log
+          if [ "$SUCCESS" = false ]; then
+            echo "❌ 严重错误：本地 127.0.0.1:8199 无法访问。"
+            echo "🔍 正在抓取系统网络状态..."
+            sudo netstat -tulpn
+            echo "🔍 检查进程是否存在..."
+            ps aux | grep -E "8199|8299"
             exit 1
           fi
 
@@ -71,58 +54,35 @@ jobs:
           touch tunnel_8299.log tunnel_8199.log
           
           # 3. 启动双隧道
-          # 8299 保持普通启动
+          # 针对 8199 增加 Host 头部伪装，防止因隧道域名访问导致的 502/403
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
-          # 8199 增加 Host 伪装和兼容性参数，解决 502 问题
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --no-chunked-encoding --logfile tunnel_8199.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "127.0.0.1:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
           
-          echo "⏳ 正在建立双重私密连接并同步至 KV..."
+          echo "⏳ 正在提取 Cloudflare 域名..."
           
           URL_8299=""
           URL_8199=""
 
           for i in {1..30}; do
-            # 分别提取两个域名
             [ -z "$URL_8299" ] && URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
             [ -z "$URL_8199" ] && URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
             
-            # 只有当两个都拿到时才进行后续操作
             if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
-              # 掩码处理 (日志脱敏)
               echo "::add-mask::$URL_8299"
               echo "::add-mask::$URL_8199"
               
-              # 同步 8299 到 KV (TARGET_API)
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
-                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299" > /dev/null
+              # 同步到 KV
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299" > /dev/null
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199" > /dev/null
               
-              # 同步 8199 到 KV (TARGET_API_8199)
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
-                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199" > /dev/null
-              
-              # 存入 ENV 供后续步骤使用
               echo "TUNNEL_URL_8299=$URL_8299" >> $GITHUB_ENV
               echo "TUNNEL_URL_8199=$URL_8199" >> $GITHUB_ENV
               
-              echo "✅ 双隧道已就绪！"
-              echo "### 🌐 隧道状态汇总" >> $GITHUB_STEP_SUMMARY
-              echo "* **8299**: 已同步至 TARGET_API" >> $GITHUB_STEP_SUMMARY
-              echo "* **8199**: 已同步至 TARGET_API_8199 (端口已确认存活)" >> $GITHUB_STEP_SUMMARY
+              echo "✅ 双隧道已就绪并同步！"
               break
             fi
-            echo "等待 Cloudflare 分配域名... ($i/30)"
             sleep 2
           done
-
-          # 4. 最后自检
-          if [ -z "$URL_8299" ] || [ -z "$URL_8199" ]; then 
-            echo "❌ 隧道域名提取失败，查看日志："
-            tail -n 20 tunnel_8199.log
-            exit 1 
-          fi
-
-          echo "🔍 最终本地连通性测试 (8199):"
-          curl -I -s http://127.0.0.1:8199/admin | grep "HTTP/" || echo "⚠️ 提示：隧道已通，但本地 /admin 路径未返回正常响应"
       
       - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
