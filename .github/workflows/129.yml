@@ -1,5 +1,4 @@
-
-name: Sub-Store Integrated Sync-129待成功-s隐藏订阅-双隧道
+name: Sub-Store Integrated Sync-129未成功-s隐藏订阅-双隧道
 on:
   schedule:
     - cron: '15 4 * * *'
@@ -15,79 +14,46 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 启动 Subs-Check 并建立双隧道
+      - name: 2. 环境与隧道准备 (安全加密版)
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
-
-          # === 1. 寻找并准备程序文件 ===
-          echo "🔍 正在寻找 subs-check 程序..."
-          # 自动寻找名为 subs-check 的文件（排除日志和文件夹）
-          FILE_PATH=$(find . -maxdepth 2 -name "subs-check" -type f | head -n 1)
           
-          if [ -z "$FILE_PATH" ]; then
-            echo "❌ 错误：在当前目录找不到 subs-check 二进制文件！"
-            echo "当前目录文件列表："
-            ls -R
-            exit 1
-          fi
-          
-          echo "✅ 找到程序：$FILE_PATH"
-          chmod +x "$FILE_PATH"
-
-          # === 2. 启动服务 ===
-          echo "🚀 启动 Subs-Check 服务..."
-          # 使用找到的确切路径启动
-          nohup "$FILE_PATH" > ${{ github.workspace }}/output/backend.log 2>&1 &
-          
-          sleep 15
-
-          # === 3. 检查端口 (8199/8299) ===
-          if ! sudo netstat -tulpn | grep -E "8199|8299"; then
-            echo "❌ 错误：端口未启动。查看日志内容："
-            cat ${{ github.workspace }}/output/backend.log
-            exit 1
-          fi
-
-          # === 4. 下载并启动隧道 (保持不变) ===
+          # 下载并静默启动隧道
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
           
-          touch tunnel_8299.log tunnel_8199.log
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
-
-          # === 5. 提取并同步 KV (保持不变) ===
-          # ... (后续代码同前)
-          # === 4. 提取域名并同步到 KV ===
-          URL_8299=""
-          URL_8199=""
+          # 关键修复：先创建日志文件，防止 grep 报错
+          touch tunnel.log
+          
+          # 启动隧道
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel.log > /dev/null 2>&1 &
+          
+          echo "⏳ 正在建立私密连接并同步至固定域名..."
           for i in {1..30}; do
-            [ -z "$URL_8299" ] && URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
-            [ -z "$URL_8199" ] && URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+            # 1. 提取域名
+            TEMP_URL=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel.log | head -n 1)
             
-            if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
-              echo "::add-mask::$URL_8299"
-              echo "::add-mask::$URL_8199"
-              
-              # 同步 8299 (Sub-Store)
+            if [ -n "$TEMP_URL" ]; then
+            # 【核心修改】将域名添加为掩码，之后所有日志输出此域名都会显示为 ***
+              echo "::add-mask::$TEMP_URL"
+              # 2. 同步到 CF KV
               curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
-                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299" > /dev/null
+                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+                   -d "$TEMP_URL" > /dev/null
               
-              # 同步 8199 (Subs-Check 管理页)
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
-                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199" > /dev/null
+              # 3. 存入 ENV
+              echo "TUNNEL_URL=$TEMP_URL" >> $GITHUB_ENV
               
-              echo "✅ 双隧道已就绪并同步至 KV"
-              echo "### 🌐 访问地址" >> $GITHUB_STEP_SUMMARY
-              echo "* Sub-Store (8299): $URL_8299" >> $GITHUB_STEP_SUMMARY
-              echo "* Subs-Check (8199): $URL_8199/admin" >> $GITHUB_STEP_SUMMARY
+              echo "✅ 固定域名已就绪！"
+              echo "### 🌐 访问地址已更新至固定域名" >> $GITHUB_STEP_SUMMARY
               break
             fi
-            echo "等待分配域名... ($i/30)"
-            sleep 2
+            sleep 1
           done
-      
+
+          if [ -z "$TEMP_URL" ]; then echo "❌ 隧道启动超时"; exit 1; fi
+
       - name: 3. 执行你的检测脚本 (实时进度+哨兵)
         run: |
 
