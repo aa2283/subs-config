@@ -1,0 +1,128 @@
+name: Sub-Store Integrated 121-Dual-Tunnel-Safe
+on:
+  schedule:
+    - cron: '15 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 2. 双隧道准备 (8299 & 8199)
+        run: |
+          # 环境清理与目录预设
+          mkdir -p ${{ github.workspace }}/output ${{ github.workspace }}/temp_config
+          sudo chmod -R 777 ${{ github.workspace }}/output
+          
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          touch tunnel_8299.log tunnel_8199.log
+          
+          # 启动双隧道
+          echo "🚀 正在启动双隧道..."
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
+          
+          # 循环提取域名并写入 KV
+          for i in {1..30}; do
+            URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
+            URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+            
+            if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
+              echo "::add-mask::$URL_8299"
+              echo "::add-mask::$URL_8199"
+              
+              # 同步到 KV
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
+                -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299" > /dev/null
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
+                -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199" > /dev/null
+              
+              echo "✅ 双隧道已就绪！"
+              echo "🔗 Sub-Store (8299): $URL_8299"
+              echo "🔗 Admin (8199): $URL_8199/admin"
+              break
+            fi
+            [ $i -eq 30 ] && (echo "❌ 隧道启动超时"; exit 1)
+            sleep 1
+          done
+
+      - name: 3. 配置恢复 (二进制安全流)
+        run: |
+          mkdir -p ${{ github.workspace }}/output
+          
+          echo "📥 正在从 KV 执行二进制恢复..."
+          # 直接将结果输出到文件，避免 shell 变量处理特殊字符
+          HTTP_CODE=$(curl -s -L -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+            -o ${{ github.workspace }}/output/sub-store.json)
+
+          # 校验文件：只要是合法的 JSON 且大小超过 50 字节就认为有效
+          if [ "$HTTP_CODE" -eq 200 ] && [ -s "${{ github.workspace }}/output/sub-store.json" ]; then
+            if jq . "${{ github.workspace }}/output/sub-store.json" > /dev/null 2>&1; then
+              echo "✅ 配置校验通过，已安全存至本地"
+            else
+              echo "❌ 发现非法字符或 JSON 格式损坏，检查 KV 内容！"
+              # 打印前 50 个字符看看是什么鬼
+              head -c 50 "${{ github.workspace }}/output/sub-store.json"
+              exit 1
+            fi
+          else
+            echo "⚠️ KV 暂无有效配置 (HTTP: $HTTP_CODE)，准备启动新配置"
+          fi
+
+          # 权限彻底开放
+          sudo chmod -R 777 ${{ github.workspace }}/output
+
+      - name: 4. 启动容器并热同步
+        run: |
+          # 启动容器
+          docker run --name checker -d \
+            -p 8299:8299 -p 8199:8199 \
+            -v ${{ github.workspace }}/output:/app/output \
+            -v ${{ github.workspace }}/output:/opt/sub-store/data \
+            ghcr.io/aa2283/subs-check:master
+          
+          sleep 5
+
+          # 如果恢复的文件存在，强制推送到容器内部，覆盖其初始化的空文件
+          if [ -f "${{ github.workspace }}/output/sub-store.json" ]; then
+             echo "🚀 正在热同步恢复文件到容器..."
+             docker cp ${{ github.workspace }}/output/sub-store.json checker:/opt/sub-store/data/sub-store.json
+             docker cp ${{ github.workspace }}/output/sub-store.json checker:/app/output/sub-store.json
+             docker exec -u root checker chmod 777 /opt/sub-store/data/sub-store.json /app/output/sub-store.json
+             echo "✅ 热同步完成"
+          fi
+
+      - name: 5. 哨兵实时同步 (二进制上传)
+        run: |
+          cp -f ${{ github.workspace }}/output/sub-store.json ./snapshot.json
+          
+          (
+            while true; do
+              sleep 30
+              # 直接对比容器内生成的文件
+              docker exec checker cat /opt/sub-store/data/sub-store.json > ./current.json
+              
+              if ! diff -q ./current.json ./snapshot.json >/dev/null 2>&1; then
+                if [ $(stat -c%s ./current.json) -gt 100 ]; then
+                  echo "📢 检测到配置更改，正在以二进制模式上传..."
+                  cp -f ./current.json ./snapshot.json
+                  
+                  # 使用 --data-binary 确保所有转义符、换行符被原样上传
+                  curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+                    -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+                    --data-binary @./current.json
+                  echo "✅ KV 已更新"
+                fi
+              fi
+            done
+          ) &
+          done
