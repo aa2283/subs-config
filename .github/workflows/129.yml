@@ -35,14 +35,45 @@ jobs:
           echo "------------------------------------------------"
           # 这里可以根据需要加回同步 KV 的代码
 
-      - name: 3. 启动常驻服务 & 执行检测任务 (修复崩溃版)
+      - name: 3. 启动常驻服务 & 执行检测任务
         run: |
-          # 1. 深度清理权限
-          mkdir -p ${{ github.workspace }}/output ${{ github.workspace }}/temp_config
+          # 1. 确保目录存在
+          mkdir -p ${{ github.workspace }}/output
+          mkdir -p ${{ github.workspace }}/temp_config
+          
+          # 2. 【核心修复】先生成一个空的或基础的配置文件，防止 Docker 创建目录
+          touch ${{ github.workspace }}/temp_config/config.yaml
+          
+          # 3. 执行你的 Python 注入逻辑 (生成真正的 config.yaml)
+          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+          python3 -c "
+          import os
+          template_path = '${{ github.workspace }}/config/config.yaml'
+          output_path = '${{ github.workspace }}/temp_config/config.yaml'
+          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
+          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
+          new_lines = ['show-useless-url: true\n']
+          if os.path.exists(template_path):
+              with open(template_path, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      if '{SUB_URLS}' in line: new_lines.extend(formatted_urls)
+                      else: new_lines.append(line)
+          with open(output_path, 'w', encoding='utf-8') as f:
+              f.writelines(new_lines)
+          "
+
+          # 4. 再次检查文件是否真的生成了
+          if [ ! -f "${{ github.workspace }}/temp_config/config.yaml" ]; then
+            echo "❌ 严重错误：config.yaml 未能生成！"
+            exit 1
+          fi
+
+          # 5. 权限大赦
           sudo chmod -R 777 ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/temp_config
 
-          # --- 步骤 A: 启动管理后台 (保持 -d) ---
+          # 🚀 启动管理后台
+          # 注意：挂载文件时确保宿主机路径是文件
           docker run -d --name subs-manager \
             -p 8299:8299 \
             -p 8199:8199 \
@@ -50,15 +81,11 @@ jobs:
             -v ${{ github.workspace }}/temp_config/config.yaml:/app/config/config.yaml \
             ghcr.io/beck-8/subs-check:latest
 
-          sleep 10
-
-          # --- 步骤 B: 执行检测任务 (关键修改：去掉 --network host) ---
-          # 这样它就不会去抢宿主机的 8199 端口，从而停止 bind error 重启循环
-          echo "🚀 开始实时检测逻辑..."
-          docker run --name checker --rm -t \
-            -v ${{ github.workspace }}/temp_config:/app/config \
-            -v ${{ github.workspace }}/output:/app/output \
-            ghcr.io/aa2283/subs-check:master || true
+          echo "⏳ 等待服务初始化..."
+          sleep 20
+          
+          # 检查 8199 是否真的活了
+          sudo netstat -tulpn | grep :8199 || echo "⚠️ 8199 仍未就绪"
 
       - name: 5. 挂机守护与单向同步备份
         run: |
