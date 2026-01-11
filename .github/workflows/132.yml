@@ -112,75 +112,77 @@ jobs:
           fi
           echo "✅ 容器运行正常"
 
-      - name: 5. 挂机锁定与单向备份 (精准下载版)
+      - name: 5. 挂机锁定与单向备份 (语法修复版)
         run: |
-          # 1. 准备私有备份库 (确保 PAT_TOKEN 权限正确)
+          # 1. 环境准备
           rm -rf backup_repo
           git clone "https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git" backup_repo
-          
           git config --global user.email "bot@github.com"
           git config --global user.name "AutoBot"
           
-          # 建立快照，用于对比网页是否点了“保存”
+          # 初始快照
           cp -f output/sub-store.json ./snapshot.json
 
+          # 2. 定义备份函数 (避免在后台块中使用复杂的字符串导致语法错误)
+          do_backup() {
+            echo "📢 [$(date +'%H:%M:%S')] 检测到更新，开始执行同步..."
+            
+            # A. 同步 KV
+            curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+              -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+              --data-binary @output/sub-store.json > /dev/null
+
+            # B. 下载订阅列表
+            local LIST="${{ vars.SUB_LIST || 'zh:ClashMeta' }}"
+            IFS=',' read -ra ITEMS <<< "$LIST"
+            mkdir -p backup_repo/sub_config/
+            
+            for item in "${ITEMS[@]}"; do
+              local NAME="${item%%:*}"
+              local TYPE="${item##*:}"
+              local EXT="txt"
+              [[ "$TYPE" == *"Clash"* ]] && EXT="yaml"
+              curl -s "http://127.0.0.1:8299/download/${NAME}?target=${TYPE}" -o "backup_repo/sub_config/${NAME}.${EXT}"
+            done
+
+            # C. 备份 JSON 并推送到 GitHub
+            cp -f output/sub-store.json backup_repo/sub_config/sub-store.json
+            
+            pushd backup_repo > /dev/null
+            git add .
+            if [ -n "$(git status --porcelain)" ]; then
+              git commit -m "🔖 Auto Backup: $(date +'%H:%M:%S')"
+              git push origin main || git push origin master
+              echo "✅ 仓库同步成功"
+            fi
+            popd > /dev/null
+            
+            # 更新快照
+            cp -f output/sub-store.json ./snapshot.json
+          }
+
+          # 3. 启动后台哨兵
           (
-            echo "🚀 哨兵已就绪，正在监控网页保存动作..."
+            echo "🚀 哨兵已就绪，监控中..."
             while true; do
               sleep 30
+              # 确保容器还在运行
+              if ! docker ps | grep -q 'checker'; then break; fi
               
-              # 只有当 output/sub-store.json 变动时，才执行备份
+              # 比对差异
               if ! diff -q output/sub-store.json ./snapshot.json >/dev/null 2>&1; then
-                # 确保 JSON 有效且不为空
-                if [ -s "output/sub-store.json" ] && jq . output/sub-store.json > /dev/null 2>&1; then
-                  echo "📢 检测到配置更新，正在执行全量备份..."
-                  cp -f output/sub-store.json ./snapshot.json
-
-                  # A. 实时同步到 Cloudflare KV (二进制安全模式)
-                  curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
-                    -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
-                    --data-binary @output/sub-store.json > /dev/null
-
-                  # B. 执行你的循环下载逻辑 (下载最新节点文件)
-                  LIST="${{ vars.SUB_LIST || 'zh:ClashMeta' }}"
-                  IFS=',' read -ra ITEMS <<< "$LIST"
-                  mkdir -p backup_repo/sub_config/
-                  
-                  echo "📥 正在从后端下载订阅文件..."
-                  for item in "${ITEMS[@]}"; do
-                    NAME="${item%%:*}"
-                    TYPE="${item##*:}"
-                    [[ "$TYPE" == *"Clash"* ]] && EXT="yaml" || EXT="txt"
-                    # 从 8299 端口获取最新的转换结果
-                    curl -s "http://127.0.0.1:8299/download/${NAME}?target=${TYPE}" -o "backup_repo/sub_config/${NAME}.${EXT}"
-                  done
-
-                  # C. 备份原始 JSON 配置到私有库
-                  cp -f output/sub-store.json backup_repo/sub_config/sub-store.json
-
-                  # D. 推送到 GitHub 私有库
-                  echo "📤 正在推送到私有仓库..."
-                  pushd backup_repo > /dev/null
-                  git add .
-                  # 检查是否有文件变动，避免提交空记录
-                  if [ -n "$(git status --porcelain)" ]; then
-                    git commit -m "🔖 网页更新备份: $(date +'%H:%M:%S')"
-                    # 尝试推送到 main 分支，如果你的分支是 master 请自行修改
-                    git push origin main || git push origin master
-                    echo "✅ 私有库备份成功"
-                  else
-                    echo "💤 文件内容无实际变化，跳过推送"
-                  fi
-                  popd > /dev/null
+                # 校验 JSON 大小和格式
+                if [ $(stat -c%s output/sub-store.json) -gt 100 ] && jq . output/sub-store.json > /dev/null 2>&1; then
+                  do_backup
                 fi
               fi
             done
           ) &
 
-          # 保持运行 15 分钟
+          # 4. 主进程挂机
+          echo "🌐 服务已完全启动"
           for i in {15..1}; do
-            echo "⏳ 哨兵守护中... 剩余 $i 分钟 (修改配置后请点保存并稍等 30 秒)"
+            echo "⏳ 在线守护中... 剩余 $i 分钟"
             sleep 60
-          done 管理页面在线中... 剩余 $i 分钟"
-            sleep 60
+          done
           done
