@@ -15,54 +15,44 @@ jobs:
       - name: 1. 检出仓库
         uses: actions/checkout@v4
 
-      - name: 2. 环境与双隧道准备 (本地唤醒版)
+      - name: 2. 启动 Subs-Check 并建立双隧道
         run: |
           mkdir -p ${{ github.workspace }}/output
           sudo chmod -R 777 ${{ github.workspace }}/output
+
+          # === 1. 启动后端服务 (Subs-Check) ===
+          # 注意：必须使用 nohup 和 & 确保它在后台持续运行，不会随步骤结束被杀死
+          echo "🚀 启动 Subs-Check 服务..."
           
-          # 下载 cloudflared
+          # 如果是二进制文件启动 (假设文件名叫 subs-check):
+          nohup ./subs-check > ${{ github.workspace }}/output/backend.log 2>&1 &
+          
+          # 或者如果你是用 Docker 启动的，请取消下面这行的注释并修改:
+          # docker run -d --name subs-check -p 8199:8199 -p 8299:3001 beck8/subs-check
+          
+          # 关键：给程序一点启动时间
+          sleep 15
+
+          # === 2. 存活验证 ===
+          echo "🔍 检查端口监听状态..."
+          sudo netstat -tulpn | grep -E "8199|8299" || {
+            echo "❌ 错误：服务未能在 8199/8299 端口启动！展示末尾日志："
+            tail -n 50 ${{ github.workspace }}/output/backend.log
+            exit 1
+          }
+
+          # === 3. 下载并启动隧道 ===
           curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
           chmod +x cloudflared
-          
-          # 1. 【核心步骤】本地唤醒与连通性强制检测
-          echo "🌐 尝试直接访问本地 127.0.0.1:8199/admin ..."
-          # 等待最多 30 秒，直到 curl 成功或超时
-          SUCCESS=false
-          for i in {1..15}; do
-            # -i 显示响应头, -s 静默, -L 跟踪重定向
-            RESPONSE=$(curl -isL --max-time 5 http://127.0.0.1:8199/admin | head -n 20)
-            if echo "$RESPONSE" | grep -q "HTTP/"; then
-              echo "✅ 本地唤醒成功！响应如下："
-              echo "$RESPONSE"
-              SUCCESS=true
-              break
-            fi
-            echo "⏳ 端口 8199 尚未响应，重试中... ($i/15)"
-            sleep 2
-          done
-
-          if [ "$SUCCESS" = false ]; then
-            echo "❌ 严重错误：本地 127.0.0.1:8199 无法访问。"
-            echo "🔍 正在抓取系统网络状态..."
-            sudo netstat -tulpn
-            echo "🔍 检查进程是否存在..."
-            ps aux | grep -E "8199|8299"
-            exit 1
-          fi
-
-          # 2. 准备日志文件
           touch tunnel_8299.log tunnel_8199.log
-          
-          # 3. 启动双隧道
-          # 针对 8199 增加 Host 头部伪装，防止因隧道域名访问导致的 502/403
+
+          # 启动双隧道
           nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
-          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "127.0.0.1:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
-          
-          echo "⏳ 正在提取 Cloudflare 域名..."
-          
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
+
+          # === 4. 提取域名并同步到 KV ===
           URL_8299=""
           URL_8199=""
-
           for i in {1..30}; do
             [ -z "$URL_8299" ] && URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
             [ -z "$URL_8199" ] && URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
@@ -71,16 +61,21 @@ jobs:
               echo "::add-mask::$URL_8299"
               echo "::add-mask::$URL_8199"
               
-              # 同步到 KV
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299" > /dev/null
-              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199" > /dev/null
+              # 同步 8299 (Sub-Store)
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" \
+                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299" > /dev/null
               
-              echo "TUNNEL_URL_8299=$URL_8299" >> $GITHUB_ENV
-              echo "TUNNEL_URL_8199=$URL_8199" >> $GITHUB_ENV
+              # 同步 8199 (Subs-Check 管理页)
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" \
+                   -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199" > /dev/null
               
-              echo "✅ 双隧道已就绪并同步！"
+              echo "✅ 双隧道已就绪并同步至 KV"
+              echo "### 🌐 访问地址" >> $GITHUB_STEP_SUMMARY
+              echo "* Sub-Store (8299): $URL_8299" >> $GITHUB_STEP_SUMMARY
+              echo "* Subs-Check (8199): $URL_8199/admin" >> $GITHUB_STEP_SUMMARY
               break
             fi
+            echo "等待分配域名... ($i/30)"
             sleep 2
           done
       
