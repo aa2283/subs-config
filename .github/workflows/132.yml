@@ -1,0 +1,186 @@
+name: Sub-Store-132 Dual-Tunnel-Integrated-Final
+on:
+  schedule:
+    - cron: '15 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 2. 环境与双隧道准备
+        run: |
+          mkdir -p output temp_config
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          touch tunnel_8299.log tunnel_8199.log
+
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8299 --logfile tunnel_8299.log > /dev/null 2>&1 &
+          nohup ./cloudflared tunnel --url http://127.0.0.1:8199 --http-host-header "localhost:8199" --logfile tunnel_8199.log > /dev/null 2>&1 &
+
+          echo "⏳ 正在等待隧道域名生成..."
+          for i in {1..20}; do
+            URL_8299=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8299.log | head -n 1)
+            URL_8199=$(grep -oE 'https://[-0-9a-z]*\.trycloudflare\.com' tunnel_8199.log | head -n 1)
+            if [ -n "$URL_8299" ] && [ -n "$URL_8199" ]; then
+              echo "::add-mask::$URL_8299"
+              echo "::add-mask::$URL_8199"
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API" -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8299"
+              curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/TARGET_API_8199" -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" -d "$URL_8199"
+              echo "✅ 双隧道已同步至 KV"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: 3. 配置恢复与 Python 订阅注入
+        run: |
+          # A. 从 KV 恢复 sub-store.json (使用二进制安全模式)
+          echo "📥 正在从 KV 恢复 sub-store.json..."
+          curl -s -L -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+            -o output/sub-store.json
+
+          if [ -s "output/sub-store.json" ] && jq . output/sub-store.json > /dev/null 2>&1; then
+            echo "✅ 配置恢复成功"
+          else
+            echo "⚠️ KV 为空或格式非法，初始化默认配置"
+            echo '{"subscribes":[],"nodes":[],"sub-store-backend":[]}' > output/sub-store.json
+          fi
+
+          # B. 【核心回归】Python 注入 SUB_URLS 到 config.yaml
+          echo "📝 正在注入隐藏订阅..."
+          export RAW_URLS_DATA="${{ secrets.SUB_URLS }}"
+          python3 -c "
+          import os
+          template_path = 'config/config.yaml'
+          output_path = 'temp_config/config.yaml'
+          raw_urls = os.environ.get('RAW_URLS_DATA', '').strip().split('\n')
+          # 过滤无效链接
+          formatted_urls = [f'  - \"{u.strip()}\"\n' for u in raw_urls if len(u.strip()) > 10]
+          new_lines = ['show-useless-url: true\n']
+          
+          if os.path.exists(template_path):
+              with open(template_path, 'r', encoding='utf-8') as f:
+                  for line in f:
+                      if '{SUB_URLS}' in line: 
+                          new_lines.extend(formatted_urls)
+                      elif 'show-useless-url' in line: 
+                          continue
+                      else: 
+                          new_lines.append(line)
+          else:
+              # 如果没有模板，生成最简配置
+              new_lines.append('subscribes:\n')
+              new_lines.extend(formatted_urls)
+
+          with open(output_path, 'w', encoding='utf-8') as f:
+              f.writelines(new_lines)
+          "
+          
+          # C. 统一权限修正
+          sudo chmod -R 777 output temp_config
+
+      - name: 4. 启动容器 (修正挂载路径)
+        run: |
+          # 彻底清理旧残留
+          docker rm -f checker || true
+          
+          echo "🚀 启动容器中..."
+          # 挂载说明：
+          # 1. /app/config -> 注入了 SUB_URLS 的 config.yaml
+          # 2. /app/output 和 /opt/sub-store/data -> 指向同一个 output 目录，包含恢复的 json
+          docker run --name checker -d \
+            -p 8299:8299 -p 8199:8199 \
+            -v ${{ github.workspace }}/temp_config:/app/config \
+            -v ${{ github.workspace }}/output:/app/output \
+            -v ${{ github.workspace }}/output:/opt/sub-store/data \
+            ghcr.io/aa2283/subs-check:master
+
+          sleep 10
+          # 状态检查
+          if ! docker ps | grep -q 'checker'; then
+            echo "❌ 容器启动失败，打印日志："
+            docker logs checker
+            exit 1
+          fi
+          echo "✅ 容器运行正常"
+
+      - name: 5. 挂机锁定与单向备份 (精准下载版)
+        run: |
+          # 1. 准备私有备份库 (确保 PAT_TOKEN 权限正确)
+          rm -rf backup_repo
+          git clone "https://${{ secrets.PAT_TOKEN }}@github.com/aa2283/v2ray_configs.git" backup_repo
+          
+          git config --global user.email "bot@github.com"
+          git config --global user.name "AutoBot"
+          
+          # 建立快照，用于对比网页是否点了“保存”
+          cp -f output/sub-store.json ./snapshot.json
+
+          (
+            echo "🚀 哨兵已就绪，正在监控网页保存动作..."
+            while true; do
+              sleep 30
+              
+              # 只有当 output/sub-store.json 变动时，才执行备份
+              if ! diff -q output/sub-store.json ./snapshot.json >/dev/null 2>&1; then
+                # 确保 JSON 有效且不为空
+                if [ -s "output/sub-store.json" ] && jq . output/sub-store.json > /dev/null 2>&1; then
+                  echo "📢 检测到配置更新，正在执行全量备份..."
+                  cp -f output/sub-store.json ./snapshot.json
+
+                  # A. 实时同步到 Cloudflare KV (二进制安全模式)
+                  curl -s -X PUT "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CF_ACCOUNT_ID }}/storage/kv/namespaces/${{ secrets.CF_KV_ID }}/values/SUB_STORE_CONFIG" \
+                    -H "Authorization: Bearer ${{ secrets.CF_API_TOKEN }}" \
+                    --data-binary @output/sub-store.json > /dev/null
+
+                  # B. 执行你的循环下载逻辑 (下载最新节点文件)
+                  LIST="${{ vars.SUB_LIST || 'zh:ClashMeta' }}"
+                  IFS=',' read -ra ITEMS <<< "$LIST"
+                  mkdir -p backup_repo/sub_config/
+                  
+                  echo "📥 正在从后端下载订阅文件..."
+                  for item in "${ITEMS[@]}"; do
+                    NAME="${item%%:*}"
+                    TYPE="${item##*:}"
+                    [[ "$TYPE" == *"Clash"* ]] && EXT="yaml" || EXT="txt"
+                    # 从 8299 端口获取最新的转换结果
+                    curl -s "http://127.0.0.1:8299/download/${NAME}?target=${TYPE}" -o "backup_repo/sub_config/${NAME}.${EXT}"
+                  done
+
+                  # C. 备份原始 JSON 配置到私有库
+                  cp -f output/sub-store.json backup_repo/sub_config/sub-store.json
+
+                  # D. 推送到 GitHub 私有库
+                  echo "📤 正在推送到私有仓库..."
+                  pushd backup_repo > /dev/null
+                  git add .
+                  # 检查是否有文件变动，避免提交空记录
+                  if [ -n "$(git status --porcelain)" ]; then
+                    git commit -m "🔖 网页更新备份: $(date +'%H:%M:%S')"
+                    # 尝试推送到 main 分支，如果你的分支是 master 请自行修改
+                    git push origin main || git push origin master
+                    echo "✅ 私有库备份成功"
+                  else
+                    echo "💤 文件内容无实际变化，跳过推送"
+                  fi
+                  popd > /dev/null
+                fi
+              fi
+            done
+          ) &
+
+          # 保持运行 15 分钟
+          for i in {15..1}; do
+            echo "⏳ 哨兵守护中... 剩余 $i 分钟 (修改配置后请点保存并稍等 30 秒)"
+            sleep 60
+          done 管理页面在线中... 剩余 $i 分钟"
+            sleep 60
+          done
