@@ -178,6 +178,7 @@ jobs:
               fi
             done
           ) &
+          SENTINEL_PID=$! # 重点：记录哨兵进程的 ID
 
           # 4. 主进程挂机
           echo "🌐 服务已完全启动"
@@ -186,3 +187,8 @@ jobs:
             sleep 60
           done
           done
+
+          # 5. 优雅清理（防止最后一分钟报错）
+          echo "🧹 倒计时结束，正在清理进程..."
+          kill $SENTINEL_PID || true
+          docker rm -f checker || true
