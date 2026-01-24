@@ -152,7 +152,7 @@ jobs:
             git add .
             if [ -n "$(git status --porcelain)" ]; then
               git commit -m "🔖 Auto Backup: $(date +'%H:%M:%S')"
-              git pull --rebase origin main
+              git pull --rebase origin main && git push origin main
               echo "✅ 仓库同步成功"
             fi
             popd > /dev/null
