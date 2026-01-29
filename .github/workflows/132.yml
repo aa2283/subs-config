@@ -151,7 +151,7 @@ jobs:
             pushd backup_repo > /dev/null
             git add .
             if [ -n "$(git status --porcelain)" ]; then
-              git commit -m "🔖 Auto Backup: $(date +'%H:%M:%S')"
+              git commit -m "🔖 subs-config Auto Backup: $(date +'%H:%M:%S')"
               git pull --rebase origin main && git push origin main
               echo "✅ 仓库同步成功"
             fi
